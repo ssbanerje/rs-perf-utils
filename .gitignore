@@ -1,0 +1,13 @@
+# Aux files
+*.json
+*.csv
+cpuinfo
+perfmon/
+
+# CLion stuff
+.idea/
+
+# Cargo stuff
+/target
+**/*.rs.bk
+Cargo.lock
