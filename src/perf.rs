@@ -1,9 +1,13 @@
+//! Interfaces that deal with the kernel and userspace perf utilities.
+
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
+use crate::Error;
+
 /// Wrappers created for the linux kernel userspace headers using `bindgen`.
-#[allow(clippy::all)]
+#[allow(clippy::all, missing_docs, missing_debug_implementations)]
 pub mod ffi {
     include!(concat!(env!("OUT_DIR"), "/kernel_headers.rs"));
 
@@ -59,7 +63,7 @@ pub fn perf_event_open(
             group_fd,
             flags,
         ) {
-            -1 => Err(crate::ErrorKind::SystemError.into()),
+            -1 => Err(Error::SystemError(-1)),
             rc => Ok(rc as libc::c_int),
         }
     }
@@ -72,7 +76,7 @@ pub fn perf_event_ioc_enable(fd: libc::c_int) -> crate::Result<()> {
     unsafe {
         match libc::ioctl(fd, ffi::PERF_EVENT_IOC_ENABLE) {
             0 => Ok(()),
-            _ => Err(crate::ErrorKind::SystemError.into()),
+            rc => Err(Error::SystemError(rc)),
         }
     }
 }
@@ -84,7 +88,7 @@ pub fn perf_event_ioc_disable(fd: libc::c_int) -> crate::Result<()> {
     unsafe {
         match libc::ioctl(fd, ffi::PERF_EVENT_IOC_DISABLE) {
             0 => Ok(()),
-            _ => Err(crate::ErrorKind::SystemError.into()),
+            rc => Err(Error::SystemError(rc)),
         }
     }
 }
@@ -96,7 +100,7 @@ pub fn perf_event_ioc_reset(fd: libc::c_int) -> crate::Result<()> {
     unsafe {
         match libc::ioctl(fd, ffi::PERF_EVENT_IOC_RESET) {
             0 => Ok(()),
-            _ => Err(crate::ErrorKind::SystemError.into()),
+            rc => Err(Error::SystemError(rc)),
         }
     }
 }

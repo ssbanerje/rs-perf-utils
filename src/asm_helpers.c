@@ -20,10 +20,12 @@ uint64_t rdpmc(uint32_t counter) {
 
 #ifdef __powerpc64__
 
-#define __mfspr(rn) ({unsigned long rval; asm volatile("mfspr %0," __stringify(rn) : "=r" (rval)); rval; })
+#define STRINGIFY_1(X...) #X
+#define STRINGIFY(X...) stringify_1(X)
+#define MFSPR(rn) ({unsigned long rval; asm volatile("mfspr %0," STRINGIFY(rn) : "=r" (rval)); rval; })
 
 unsigned long mfspr_pvr() {
-  unsigned long pvr = mfspr(0x11F);
+  unsigned long pvr = MFSPR(0x11F);
   return pvr;
 }
 

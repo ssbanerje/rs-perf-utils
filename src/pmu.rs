@@ -1,8 +1,10 @@
-use log::info;
+//! Utilities to read and process PMU events.
+
 use regex::Regex;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 
-/// Get identifier string for the CPU
+/// Get identifier string for the local CPU.
 pub fn get_cpu_string() -> crate::Result<String> {
     Ok(arch_specific_cpustr())
 }
@@ -14,7 +16,7 @@ extern "C" {
     fn mfspr_pvr() -> u32;
 }
 
-/// Get cpuid for x86 processors.
+/// Get CPU model string for x86 processors.
 #[cfg(target_arch = "x86_64")]
 fn arch_specific_cpustr() -> String {
     let mut lvl = 0u32;
@@ -70,7 +72,7 @@ fn arch_specific_cpustr() -> String {
     )
 }
 
-/// Get cpuid for ppc64 processors.
+/// Get CPU model string for ppc64 processors.
 #[cfg(target_arch = "powerpc64")]
 fn arch_specific_cpustr() -> String {
     let pvr = unsafe { mfspr_pvr() };
@@ -79,8 +81,12 @@ fn arch_specific_cpustr() -> String {
     format!("{:X}{:X}", pvr_version, pvr_revision)
 }
 
+/// Raw event format represented in the JSON event files.
+type RawEvent = HashMap<String, String>;
+
+/// Structure representing a parsed JSON event.
 #[derive(Debug, Default)]
-pub struct RawEvent {
+pub struct ParsedEvent {
     name: Option<String>,
     event: Option<String>,
     desc: Option<String>,
@@ -94,9 +100,15 @@ pub struct RawEvent {
     metric_group: Option<String>,
 }
 
-#[derive(Debug)]
-struct ParsedEvent;
+impl ParsedEvent {
+    /// Create a new `ParsedEvent` from a `RawEvent`.
+    pub fn from_raw_event(_raw_event: &RawEvent) -> crate::Result<ParsedEvent> {
+        // TODO IMPLEMENT
+        Ok(ParsedEvent::default())
+    }
+}
 
+/// Provides the ability to parse and interact with CPU specific PMU counters using their JSON descriptions.
 #[derive(Default, Debug)]
 pub struct Pmu {
     cpu_str: String,
@@ -129,7 +141,7 @@ impl Pmu {
         let mapped_files = BufReader::new(mapfile)
             .lines()
             .filter_map(Result::ok)
-            .filter(|l| !l.starts_with('#'))
+            .filter(|l| !l.starts_with('#') && !l.starts_with('\n'))
             .filter_map(|l| {
                 let splits: Vec<&str> = l.split(',').collect();
                 if Regex::new(splits[0]).unwrap().is_match(&cpu) {
@@ -153,34 +165,41 @@ impl Pmu {
                 }
             });
         json_files.extend(mapped_files);
-        info!("Parsing PMU events from {:?}", json_files);
 
-        // Parse JSON files
-        let evts: Vec<RawEvent> = json_files
+        // Read JSON files
+        let raw_data: Vec<RawEvent> = json_files
             .iter()
-            .map(|f| std::fs::read_to_string(f).unwrap())
-            .map(|s| serde_json::from_str(s.as_str()))
-            .filter_map(Result::ok)
-            .flat_map(Pmu::parse_json)
+            .map(|f| {
+                let s = std::fs::read_to_string(f).unwrap();
+                let mut j: Vec<HashMap<String, String>> = serde_json::from_str(s.as_str()).unwrap();
+                j.iter_mut().for_each(|x| {
+                    // Add the file name as a topic
+                    let fname = std::path::Path::new(&f)
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
+                    x.entry(String::from("Topic"))
+                        .or_insert_with(|| String::from(&fname[0..fname.len() - 5]));
+                });
+                j
+            })
+            .flatten()
             .collect();
 
+        // Parse the data
+        let parsed_data: Vec<ParsedEvent> = raw_data
+            .iter()
+            .map(ParsedEvent::from_raw_event)
+            .filter_map(Result::ok)
+            .collect();
+
+        // Ok we are done create the Pmu struct
         Ok(Pmu {
             cpu_str: cpu,
-            raw_events: evts,
-            parsed_events: vec![],
+            raw_events: raw_data,
+            parsed_events: parsed_data,
         })
-    }
-
-    fn parse_json(v: serde_json::Value) -> Vec<RawEvent> {
-        v.as_array()
-            .unwrap()
-            .iter()
-            .map(|_j| {
-                let evt = RawEvent::default();
-                // TODO: Implement
-                evt
-            })
-            .collect()
     }
 }
 
@@ -202,5 +221,6 @@ mod tests {
         };
         let pmu = Pmu::from_local_cpu(pmu_events_path);
         assert!(pmu.is_ok());
+        println!("{:?}", pmu.unwrap().raw_events)
     }
 }

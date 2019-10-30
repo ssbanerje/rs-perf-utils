@@ -1,3 +1,5 @@
+//! Utilities specific to the x86 architecture.
+
 #![allow(non_snake_case)]
 
 use crate::perf::*;
@@ -7,6 +9,7 @@ extern "C" {
 }
 
 /// Allows accessing CPU performance counters from ring 3 using the `perf_events` subsystem.
+#[derive(Debug)]
 pub struct RDPMC {
     /// File descriptor to performance counter.
     fd: i32,

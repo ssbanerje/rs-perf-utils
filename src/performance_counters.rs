@@ -1,4 +1,7 @@
+//! Utilities to read sampled events from memory mapped ring buffer.
+
 use crate::perf::*;
+use crate::errors::Error;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::SeqCst;
 
@@ -51,7 +54,7 @@ impl MmappedRingBuffer {
                     extra: [0u8; 256],
                 })
             } else {
-                Err(crate::ErrorKind::SystemError.into())
+                Err(Error::SystemError(libc::MAP_FAILED as _))
             }
         }
     }
@@ -74,6 +77,19 @@ impl MmappedRingBuffer {
                 marker: std::marker::PhantomData,
             }
         }
+    }
+}
+
+impl std::fmt::Debug for MmappedRingBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "MmappedRingBuffer({:X}, {}, {:X}, {:X})",
+            self.header.load(SeqCst) as usize,
+            self.size,
+            self.base as usize,
+            self.extra.as_ptr() as usize
+        )
     }
 }
 
