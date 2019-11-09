@@ -2,14 +2,6 @@
 
 #ifdef __x86_64__
 
-void cpuid(unsigned int op, unsigned int *a, unsigned int *b, unsigned int *c, unsigned int *d)
-{
-  asm volatile (".byte 0x53\n\tcpuid\n\t"
-                "movl %%ebx, %%esi\n\t.byte 0x5b"
-                : "=a" (*a),  "=S" (*b),  "=c" (*c),  "=d" (*d)
-                : "a" (op));
-}
-
 uint64_t rdpmc(uint32_t counter) {
   uint32_t low, high;
   asm volatile("rdpmc" : "=a" (low), "=d" (high) : "c" (counter));

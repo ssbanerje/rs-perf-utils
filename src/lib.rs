@@ -5,13 +5,28 @@
 mod errors;
 pub use errors::{Error, Result};
 
-mod pmu;
-pub use pmu::{Pmu, ParsedEvent};
-
 pub mod perf;
 
-mod performance_counters;
-pub use performance_counters::{MmappedRingBuffer, Events, EventRecord};
+mod pmu;
+pub use pmu::{Pmu, PmuEvent, RawEvent};
 
-mod x86;
-pub use x86::RDPMC;
+mod performance_counters;
+pub use performance_counters::{EventRecord, Events, MmappedRingBuffer};
+
+#[cfg(target_arch = "x86_64")]
+mod x86_64;
+
+#[cfg(target_arch = "powerpc64")]
+mod powerpc64;
+
+/// Architecture specific implementation details of performance counters.
+pub mod arch_specific {
+    #[cfg(target_arch = "x86_64")]
+    pub use crate::x86_64::*;
+
+    #[cfg(target_arch = "powerpc64")]
+    pub use crate::powerpc64::*;
+}
+
+mod pci;
+pub use pci::PciHandle;

@@ -1,4 +1,4 @@
-//! Utilities specific to the x86 architecture.
+//! Utilities specific to the x86_64 architecture.
 
 #![allow(non_snake_case)]
 
@@ -8,23 +8,32 @@ extern "C" {
     fn rdpmc(counter: u32) -> u64;
 }
 
+/*
+unsafe fn rdpmc(counter: i32) -> i64 {
+    let mut low = 0i32;
+    let mut high = 0i32;
+    asm!("rdpmc" : "=a" (low), "=d" (high) : "c" (counter));
+    (low as u64) | ((high as u64) << 32)
+}
+*/
+
 /// Allows accessing CPU performance counters from ring 3 using the `perf_events` subsystem.
 #[derive(Debug)]
-pub struct RDPMC {
+pub struct Rdpmc {
     /// File descriptor to performance counter.
     fd: i32,
     /// Memory mapped structure storing the performance counter.
     buf: *mut ffi::perf_event_mmap_page,
 }
 
-impl RDPMC {
+impl Rdpmc {
     /// Initialize the performance counter using its raw even descriptor.
     pub fn open_raw_desc(
         counter: u64,
-        leader: Option<&RDPMC>,
+        leader: Option<&Rdpmc>,
         pid: libc::pid_t,
         cpuid: libc::c_int,
-    ) -> crate::Result<RDPMC> {
+    ) -> crate::Result<Self> {
         let mut attr = ffi::perf_event_attr::default();
         attr.type_ = (if counter > 10 {
             ffi::perf_type_id::PERF_TYPE_RAW
@@ -36,17 +45,17 @@ impl RDPMC {
         attr.sample_type = ffi::perf_event_sample_format::PERF_SAMPLE_READ as _;
         attr.set_exclude_kernel(1);
         attr.set_exclude_hv(1);
-        RDPMC::open_perf_attr(&attr, leader, pid, cpuid)
+        Rdpmc::open_perf_attr(&attr, leader, pid, cpuid)
     }
 
     /// Initialize the performance counter using its a `PerfEventAttr`.
     pub fn open_perf_attr(
         attr: &ffi::perf_event_attr,
-        leader: Option<&RDPMC>,
+        leader: Option<&Rdpmc>,
         pid: libc::pid_t,
         cpuid: libc::c_int,
-    ) -> crate::Result<RDPMC> {
-        let mut new_ctr = RDPMC {
+    ) -> crate::Result<Rdpmc> {
+        let mut new_ctr = Rdpmc {
             fd: perf_event_open(
                 attr,
                 pid,
@@ -101,7 +110,7 @@ impl RDPMC {
     }
 }
 
-impl Drop for RDPMC {
+impl Drop for Rdpmc {
     fn drop(&mut self) {
         unsafe {
             libc::munmap(
@@ -113,27 +122,30 @@ impl Drop for RDPMC {
     }
 }
 
-//#[cfg(test)]
-//mod tests {
-//    use crate::x86::{PmuX86, RDPMC};
-//
-//    #[test]
-//    fn rdpmc() {
-//        let counter = RDPMC::open_raw_desc(0, 0, -1);
-//        assert!(counter.is_ok());
-//        let mut counter = counter.unwrap();
-//
-//        let mut prev = counter.read();
-//        let thresh = 1000;
-//
-//        loop {
-//            let next = counter.read();
-//            if next - prev > thresh {
-//                println!("{}, {}", next, prev);
-//                break;
-//            }
-//            prev = next;
-//            std::thread::sleep(std::time::Duration::from_secs(1));
-//        }
-//    }
-//}
+// TODO FIX TEST
+/*
+#[cfg(test)]
+mod tests {
+    use crate::x86_64::*;
+
+    #[test]
+    fn rdpmc() {
+        let counter = Rdpmc::open_raw_desc(0, None, 0, -1);
+        assert!(counter.is_ok());
+        let mut counter = counter.unwrap();
+
+        let mut prev = counter.read();
+        let thresh = 1000;
+
+        loop {
+            let next = counter.read();
+            if next - prev > thresh {
+                println!("{}, {}", next, prev);
+                break;
+            }
+            prev = next;
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+}
+*/

@@ -1,7 +1,7 @@
 //! Utilities to read sampled events from memory mapped ring buffer.
 
-use crate::perf::*;
 use crate::errors::Error;
+use crate::perf::*;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::SeqCst;
 

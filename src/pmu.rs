@@ -1,130 +1,345 @@
 //! Utilities to read and process PMU events.
 
+use crate::perf;
 use regex::Regex;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::io::{BufRead, BufReader};
 
-/// Get identifier string for the local CPU.
-pub fn get_cpu_string() -> crate::Result<String> {
-    Ok(arch_specific_cpustr())
-}
-
-extern "C" {
-    #[cfg(target_arch = "x86_64")]
-    fn cpuid(op: u32, a: *mut u32, b: *mut u32, c: *mut u32, d: *mut u32);
-    #[cfg(target_arch = "powerpc64")]
-    fn mfspr_pvr() -> u32;
-}
-
-/// Get CPU model string for x86 processors.
-#[cfg(target_arch = "x86_64")]
-fn arch_specific_cpustr() -> String {
-    let mut lvl = 0u32;
-    let mut a = 0u32;
-    let mut b = 0u32;
-    let mut c = 0u32;
-    let mut d = 0u32;
-    let mut vendor = [0u8; 12];
-    let mut family = 0u32;
-    let mut model = 0u32;
-    let mut step = 0u32;
-
-    unsafe {
-        cpuid(
-            0,
-            &mut lvl as *mut u32,
-            &mut b as *mut u32,
-            &mut c as *mut u32,
-            &mut d as *mut u32,
-        );
-        std::ptr::copy_nonoverlapping(&b as *const u32 as *const u8, &mut vendor[0] as *mut u8, 4);
-        std::ptr::copy_nonoverlapping(&d as *const u32 as *const u8, &mut vendor[4] as *mut u8, 4);
-        std::ptr::copy_nonoverlapping(&c as *const u32 as *const u8, &mut vendor[8] as *mut u8, 4);
-    }
-
-    if lvl >= 1 {
-        unsafe {
-            cpuid(
-                1,
-                &mut a as *mut u32,
-                &mut b as *mut u32,
-                &mut c as *mut u32,
-                &mut d as *mut u32,
-            );
-        }
-        family = (a >> 8) & 0xf;
-        model = (a >> 4) & 0xf;
-        step = a & 0xf;
-        if family == 0xf {
-            family += (a >> 20) & 0xff;
-        }
-        if family >= 0x6 {
-            model += ((a >> 16) & 0xf) << 4;
-        }
-    }
-
-    format!(
-        "{}-{:X}-{:X}-{:X}",
-        std::str::from_utf8(&vendor).unwrap(),
-        family,
-        model,
-        step
-    )
-}
-
-/// Get CPU model string for ppc64 processors.
-#[cfg(target_arch = "powerpc64")]
-fn arch_specific_cpustr() -> String {
-    let pvr = unsafe { mfspr_pvr() };
-    let pvr_version = (pvr >> 16) & 0xFFFF;
-    let pvr_revision = (pvr >> 0) & 0xFFFF;
-    format!("{:X}{:X}", pvr_version, pvr_revision)
-}
-
 /// Raw event format represented in the JSON event files.
-type RawEvent = HashMap<String, String>;
+pub type RawEvent = HashMap<String, String>;
 
-/// Structure representing a parsed JSON event.
+/// Abstraction for a performance counter event.
 #[derive(Debug, Default)]
-pub struct ParsedEvent {
-    name: Option<String>,
-    event: Option<String>,
-    desc: Option<String>,
-    topic: Option<String>,
-    long_desc: Option<String>,
+pub struct PmuEvent {
+    name: String,
+    topic: String,
+    desc: String,
+    long_desc: String,
+    is_metric: bool,
+
+    event_code: Option<u64>,
+    umask: Option<u64>,
+    cmask: Option<u8>,
+    edge: bool,
+    inv: bool,
+    per_pkg: Option<String>,
+    pebs: Option<i32>,
+    msr: Option<u64>,
+    msr_val: Option<u64>,
+    filter: Option<String>,
     pmu: Option<String>,
     unit: Option<String>,
-    perpkg: Option<String>,
-    metric_expr: Option<String>,
-    metric_name: Option<String>,
+    extra: Option<String>,
+
     metric_group: Option<String>,
+    metric_expr: Option<String>,
 }
 
-impl ParsedEvent {
-    /// Create a new `ParsedEvent` from a `RawEvent`.
-    pub fn from_raw_event(_raw_event: &RawEvent) -> crate::Result<ParsedEvent> {
-        // TODO IMPLEMENT
-        Ok(ParsedEvent::default())
+impl PmuEvent {
+    /// Get Linux PMU names from `Unit` names in the JSON.
+    fn _pmu_from_json(val: &str) -> Option<&'static str> {
+        match val {
+            "CBO" => Some("uncore_cbox"),
+            "NCU" => Some("uncore_cbox_0"),
+            "QPI LL" => Some("uncore_qpi"),
+            "SBO" => Some("uncore_sbox"),
+            "iMPH-U" => Some("uncore_arb"),
+            "CPU-M-CF" => Some("cpum_cf"),
+            "CPU-M-SF" => Some("cpum_sf"),
+            "UPI LL" => Some("uncore_upi"),
+            "hisi_sccl,ddrc" => Some("hisi_sccl,ddrc"),
+            "hisi_sccl,hha" => Some("hisi_sccl,hha"),
+            "hisi_sccl,l3c" => Some("hisi_sccl,l3c"),
+            "L3PMC" => Some("amd_l3"),
+            _ => None,
+        }
+    }
+
+    /// Create a new `PmuEvent` from a `RawEvent`.
+    pub fn from_raw_event(
+        raw_event: &RawEvent,
+        version: &perf::PerfVersion,
+    ) -> crate::Result<Self> {
+        let mut evt = PmuEvent::default();
+
+        if let Some(n) = raw_event.get("EventName") {
+            // This is a plain event
+            evt.is_metric = false;
+            evt.name = n.clone();
+            let mut evt_code = 0;
+            if let Some(c) = raw_event.get("EventCode") {
+                let splits: Vec<&str> = c.split(',').collect();
+                evt_code |= u64::from_str_radix(&splits[0][2..], 16)?;
+            }
+            if let Some(c) = raw_event.get("ExtSel") {
+                evt_code |= u64::from_str_radix(&c.as_str()[2..], 16)? << 21;
+            }
+            evt.event_code = Some(evt_code);
+            if let Some(u) = raw_event.get("UMask") {
+                evt.umask = Some(u64::from_str_radix(&u[2..], 16)?);
+            }
+            if let Some(c) = raw_event.get("CounterMask") {
+                evt.cmask = Some(c.parse()?);
+            }
+            if let Some(e) = raw_event.get("EdgeDetect") {
+                evt.edge = (e.parse::<i32>()?) != 0;
+            }
+            if let Some(i) = raw_event.get("Invert") {
+                evt.inv = (i.parse::<i32>()?) != 0;
+            }
+            if let Some(s) = raw_event.get("ScaleUnit") {
+                evt.unit = Some(s.clone());
+            }
+            if let Some(p) = raw_event.get("PerPkg") {
+                evt.per_pkg = Some(p.clone());
+            }
+            if let Some(p) = raw_event.get("PEBS") {
+                evt.pebs = Some(p.parse()?);
+            }
+            if let Some(f) = raw_event.get("Filter") {
+                evt.filter = Some(f.clone());
+            }
+            if let Some(msr) = raw_event.get("MSRIndex") {
+                let split: Vec<&str> = msr.split(',').collect();
+                evt.msr = if split[0].len() == 1 {
+                    Some(split[0].parse()?)
+                } else {
+                    Some(u64::from_str_radix(&split[0][2..], 16)?)
+                };
+            }
+            if let Some(val) = raw_event.get("MSRValue") {
+                evt.msr_val = if val.len() == 1 {
+                    Some(val.parse()?)
+                } else {
+                    Some(u64::from_str_radix(&val[2..], 16)?)
+                };
+
+                let msr = evt.msr.unwrap();
+                let msr_val = evt.msr_val.unwrap();
+                if version.offcore() && (msr == 0x1A6 || msr == 0x1A7) {
+                    evt.extra = Some(format!(",offcore_rsp={:#X}", msr_val));
+                } else if version.ldlat() && (msr == 0x3F6) {
+                    evt.extra = Some(format!(",ldlat={:#X}", msr_val));
+                } else if msr == 0x3F7 {
+                    evt.extra = Some(format!(",frontend={:#X}", msr_val));
+                }
+            }
+            if let Some(u) = raw_event.get("Unit") {
+                if u == "NCU" {
+                    evt.umask = Some(0);
+                    evt.event_code = Some(0xFF);
+                }
+                evt.unit = Some(u.clone());
+                evt.pmu = if let Some(pmu) = PmuEvent::_pmu_from_json(u.as_str()) {
+                    Some(String::from(pmu))
+                } else {
+                    Some(format!("uncore_{}", u))
+                };
+            }
+        } else if let Some(n) = raw_event.get("MetricName") {
+            // This is derived event
+            evt.is_metric = true;
+            evt.name = n.clone();
+            evt.metric_group = Some(raw_event.get("MetricGroup").unwrap().clone());
+            evt.metric_expr = Some(raw_event.get("MetricExpr").unwrap().clone());
+        } else {
+            return Err(crate::Error::PmuParseError);
+        }
+        evt.topic = raw_event.get("Topic").expect("Topic").clone();
+        if let Some(d) = raw_event.get("BriefDescription") {
+            evt.desc = d.clone();
+        }
+        if let Some(d) = raw_event.get("PublicDescription") {
+            evt.long_desc = d.clone();
+        }
+
+        // All done
+        Ok(evt)
+    }
+
+    /// Perf strings for core events.
+    fn _get_core_event_string(&self, is_direct: bool, put_name: bool) -> String {
+        let mut raw_evt_num = 0x0;
+        if let Some(e) = self.event_code {
+            raw_evt_num |= e & 0xFF;
+        }
+        if let Some(u) = self.umask {
+            raw_evt_num |= (u & 0xFF) << 8;
+        }
+        let raw_evt = format!("r{:X}", raw_evt_num);
+        if is_direct {
+            raw_evt
+        } else {
+            let name = if put_name {
+                format!(
+                    ",name={}",
+                    self.name
+                        .replace('.', "_")
+                        .replace(':', "_")
+                        .replace('=', "_")
+                )
+            } else {
+                String::default()
+            };
+            let cmask = if let Some(c) = self.cmask {
+                format!(",cmask={:#X}", c)
+            } else {
+                String::default()
+            };
+            let edge = if self.edge {
+                String::from(",edge=1")
+            } else {
+                String::default()
+            };
+            let inv = if self.inv {
+                String::from(",inv=1")
+            } else {
+                String::default()
+            };
+            format!(
+                "cpu/event={:#X},umask={:#X}{}{}{}{}/",
+                self.event_code.unwrap(),
+                self.umask.unwrap(),
+                cmask,
+                edge,
+                inv,
+                name
+            )
+        }
+    }
+
+    /// Perf strings for uncore events.
+    fn _get_uncore_event_string(&self, put_name: bool) -> String {
+        let umask = if let Some(u) = self.umask {
+            format!(",umask={:#X}", u)
+        } else {
+            String::default()
+        };
+        let cmask = if let Some(c) = self.cmask {
+            format!(",cmask={:#X}", c)
+        } else {
+            String::default()
+        };
+        let edge = if self.edge {
+            String::from(",edge=1")
+        } else {
+            String::default()
+        };
+        let inv = if self.inv {
+            String::from(",inv=1")
+        } else {
+            String::default()
+        };
+        let name = if put_name {
+            format!(",name={}_NUM", self.name.replace(".", "_"))
+        } else {
+            String::default()
+        };
+        format!(
+            "{}/event={:#X}{}{}{}{}{}/",
+            match self.pmu {
+                Some(ref p) => p,
+                _ => unreachable!(),
+            },
+            self.event_code.unwrap(),
+            umask,
+            cmask,
+            edge,
+            inv,
+            name
+        )
+    }
+
+    /// Get string for perf command line tool from this `PmuEvent`.
+    pub fn to_perf_string(&self, pv: &perf::PerfVersion) -> String {
+        if !self.is_metric {
+            if self.unit.is_none() {
+                self._get_core_event_string(pv.direct(), pv.has_name())
+            } else {
+                self._get_uncore_event_string(pv.has_name())
+            }
+        } else {
+            // TODO Implement metrics
+            unimplemented!()
+        }
+    }
+
+    /// Get a `perf_event_attr` corresponding to this event.
+    ///
+    /// If this event is a derived event, then it returns multiple `perf_event_attrs` corresponding
+    /// to all events that need to be collected.
+    pub fn to_perf_event_attr(&self) -> Vec<perf::ffi::perf_event_attr> {
+        if !self.is_metric {
+            let mut attr = perf::ffi::perf_event_attr::default();
+            attr.size = std::mem::size_of_val(&attr).try_into().unwrap();
+            attr.type_ = perf::ffi::perf_type_id::PERF_TYPE_RAW as _;
+            if let Some(e) = self.event_code {
+                attr.config |= e & 0xFF;
+            }
+            if let Some(u) = self.umask {
+                attr.config |= (u as u64 & 0xFF) << 8;
+            }
+            if let Some(c) = self.cmask {
+                attr.config |= (c as u64 & 0xF) << 24;
+            }
+            if self.inv {
+                attr.config |= 1u64 << 23;
+            }
+            if self.edge {
+                attr.config |= 1u64 << 18;
+            }
+            if let Some(ref extra) = self.extra {
+                if extra.contains("offcore_rsp") {
+                    unsafe { attr.__bindgen_anon_3.config1 |= self.msr_val.unwrap() }
+                } else if extra.contains("ldlat") {
+                    unsafe { attr.__bindgen_anon_3.config1 |= self.msr_val.unwrap() & 0xFFFF }
+                }
+            }
+            if let Some(ref pmu) = self.pmu {
+                glob::glob(&format!("/sys/devices/{}*/type", pmu))
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .map(|x| {
+                        let mut a = attr;
+                        a.type_ = std::fs::read_to_string(&x)
+                            .unwrap()
+                            .trim()
+                            .parse::<u32>()
+                            .unwrap();
+                        a
+                    })
+                    .collect()
+            } else {
+                vec![attr]
+            }
+        } else {
+            // TODO Implement
+            unimplemented!()
+        }
     }
 }
 
 /// Provides the ability to parse and interact with CPU specific PMU counters using their JSON descriptions.
 #[derive(Default, Debug)]
 pub struct Pmu {
-    cpu_str: String,
+    /// String identifying CPU.
+    pub cpu_str: String,
+    /// List of parsed performance counter events.
+    pub events: Vec<PmuEvent>,
+    /// Raw JSON-based performance counter events for the `cpu_str`.
     raw_events: Vec<RawEvent>,
-    parsed_events: Vec<ParsedEvent>,
 }
 
 impl Pmu {
     /// Load PMU event information for local CPU from the specified path.
-    pub fn from_local_cpu(path: String) -> crate::Result<Pmu> {
-        let cpu_str = get_cpu_string()?;
+    pub fn from_local_cpu(path: String) -> crate::Result<Self> {
+        let cpu_str = crate::arch_specific::get_cpu_string();
         Pmu::from_cpu_str(cpu_str, path)
     }
 
     /// Load CPU-specific PMU information from the specified path.
-    pub fn from_cpu_str(cpu: String, path: String) -> crate::Result<Pmu> {
+    pub fn from_cpu_str(cpu: String, path: String) -> crate::Result<Self> {
         // Check for global events
         let mut json_files: Vec<String> = std::fs::read_dir(&path)
             .unwrap()
@@ -155,10 +370,14 @@ impl Pmu {
                 if std::fs::metadata(&full_path).unwrap().is_file() {
                     vec![full_path]
                 } else {
-                    std::fs::read_dir(full_path)
+                    std::fs::read_dir(&full_path)
                         .unwrap()
                         .filter_map(|x| match x {
-                            Ok(f) => Some(f.file_name().into_string().unwrap()),
+                            Ok(f) => Some(format!(
+                                "{}/{}",
+                                &full_path,
+                                f.file_name().into_string().unwrap()
+                            )),
                             _ => None,
                         })
                         .collect()
@@ -166,10 +385,9 @@ impl Pmu {
             });
         json_files.extend(mapped_files);
 
-        // Read JSON files
-        let raw_data: Vec<RawEvent> = json_files
+        let raw_events: Vec<RawEvent> = json_files
             .iter()
-            .map(|f| {
+            .flat_map(|f| {
                 let s = std::fs::read_to_string(f).unwrap();
                 let mut j: Vec<HashMap<String, String>> = serde_json::from_str(s.as_str()).unwrap();
                 j.iter_mut().for_each(|x| {
@@ -184,43 +402,64 @@ impl Pmu {
                 });
                 j
             })
-            .flatten()
             .collect();
 
-        // Parse the data
-        let parsed_data: Vec<ParsedEvent> = raw_data
-            .iter()
-            .map(ParsedEvent::from_raw_event)
-            .filter_map(Result::ok)
-            .collect();
-
-        // Ok we are done create the Pmu struct
+        // Construct the Pmu
+        let version = perf::PerfVersion::get_details_from_tool()?;
         Ok(Pmu {
             cpu_str: cpu,
-            raw_events: raw_data,
-            parsed_events: parsed_data,
+            events: raw_events
+                .iter()
+                .map(|x| PmuEvent::from_raw_event(x, &version))
+                .filter_map(Result::ok)
+                .collect(),
+            raw_events,
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::pmu::{get_cpu_string, Pmu};
-
-    #[test]
-    fn test_cpu_str() {
-        let cpu_str = get_cpu_string();
-        assert!(cpu_str.is_ok());
-    }
+    use super::*;
+    use crate::perf;
+    use std::process::{Command, Stdio};
 
     #[test]
     fn test_pmu_construction() {
-        let pmu_events_path = match std::env::var("PMU_EVENTS") {
-            Ok(x) => x,
-            Err(_) => "perfmon".into(),
-        };
+        let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
         let pmu = Pmu::from_local_cpu(pmu_events_path);
         assert!(pmu.is_ok());
-        println!("{:?}", pmu.unwrap().raw_events)
+    }
+
+    #[test]
+    fn test_pmuevent_to_perfstring() {
+        let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
+        let pmu = Pmu::from_local_cpu(pmu_events_path).unwrap();
+        let pv = perf::PerfVersion::get_details_from_tool().unwrap();
+        let perf_strings: Vec<String> = pmu
+            .events
+            .iter()
+            .map(|x| x.to_perf_string(&pv))
+            .filter(|x| !x.is_empty())
+            .collect();
+        for evt in perf_strings.iter() {
+            let stat = Command::new("perf")
+                .args(&["stat", "-e", evt.as_str(), "--", "ls"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(stat.success())
+        }
+    }
+
+    #[test]
+    fn test_perf_event_attr_gen() {
+        let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
+        let pmu = Pmu::from_local_cpu(pmu_events_path).unwrap();
+        for evt in pmu.events.iter() {
+            let attr = evt.to_perf_event_attr();
+            assert!(!attr.is_empty());
+        }
     }
 }
