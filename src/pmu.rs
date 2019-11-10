@@ -1,6 +1,7 @@
 //! Utilities to read and process PMU events.
 
 use crate::perf;
+use crate::Result;
 use regex::Regex;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -10,13 +11,20 @@ use std::io::{BufRead, BufReader};
 pub type RawEvent = HashMap<String, String>;
 
 /// Abstraction for a performance counter event.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct PmuEvent {
-    name: String,
-    topic: String,
-    desc: String,
-    long_desc: String,
-    is_metric: bool,
+    /// Name of the event.
+    pub name: String,
+    /// Topic of the event.
+    ///
+    /// This is the name of the JSON file from which the event was parsed.
+    pub topic: String,
+    /// Brief summary of the event.
+    pub desc: String,
+    /// Long description of the event.
+    pub long_desc: String,
+    /// Stores whether this `PmuEvent` is derived from several other events.
+    pub is_metric: bool,
 
     event_code: Option<u64>,
     umask: Option<u64>,
@@ -57,10 +65,7 @@ impl PmuEvent {
     }
 
     /// Create a new `PmuEvent` from a `RawEvent`.
-    pub fn from_raw_event(
-        raw_event: &RawEvent,
-        version: &perf::PerfVersion,
-    ) -> crate::Result<Self> {
+    pub fn from_raw_event(raw_event: &RawEvent, version: &perf::PerfVersion) -> Result<Self> {
         let mut evt = PmuEvent::default();
 
         if let Some(n) = raw_event.get("EventName") {
@@ -144,7 +149,7 @@ impl PmuEvent {
             evt.metric_group = Some(raw_event.get("MetricGroup").unwrap().clone());
             evt.metric_expr = Some(raw_event.get("MetricExpr").unwrap().clone());
         } else {
-            return Err(crate::Error::PmuParseError);
+            return Err(crate::Error::ParsePmu);
         }
         evt.topic = raw_event.get("Topic").expect("Topic").clone();
         if let Some(d) = raw_event.get("BriefDescription") {
@@ -160,28 +165,17 @@ impl PmuEvent {
 
     /// Perf strings for core events.
     fn _get_core_event_string(&self, is_direct: bool, put_name: bool) -> String {
-        let mut raw_evt_num = 0x0;
-        if let Some(e) = self.event_code {
-            raw_evt_num |= e & 0xFF;
-        }
-        if let Some(u) = self.umask {
-            raw_evt_num |= (u & 0xFF) << 8;
-        }
-        let raw_evt = format!("r{:X}", raw_evt_num);
         if is_direct {
-            raw_evt
-        } else {
-            let name = if put_name {
+            if cfg!(target_arch = "x86_64") {
                 format!(
-                    ",name={}",
-                    self.name
-                        .replace('.', "_")
-                        .replace(':', "_")
-                        .replace('=', "_")
+                    "r{:X}{:X}",
+                    self.umask.unwrap() & 0xFF,
+                    self.event_code.unwrap() & 0xFF
                 )
             } else {
-                String::default()
-            };
+                format!("r{:X}", self.event_code.unwrap())
+            }
+        } else {
             let cmask = if let Some(c) = self.cmask {
                 format!(",cmask={:#X}", c)
             } else {
@@ -194,6 +188,17 @@ impl PmuEvent {
             };
             let inv = if self.inv {
                 String::from(",inv=1")
+            } else {
+                String::default()
+            };
+            let name = if put_name {
+                format!(
+                    ",name={}",
+                    self.name
+                        .replace('.', "_")
+                        .replace(':', "_")
+                        .replace('=', "_")
+                )
             } else {
                 String::default()
             };
@@ -270,6 +275,7 @@ impl PmuEvent {
     /// If this event is a derived event, then it returns multiple `perf_event_attrs` corresponding
     /// to all events that need to be collected.
     pub fn to_perf_event_attr(&self) -> Vec<perf::ffi::perf_event_attr> {
+        // TODO Unsure if this works on a PowerPC machine
         if !self.is_metric {
             let mut attr = perf::ffi::perf_event_attr::default();
             attr.size = std::mem::size_of_val(&attr).try_into().unwrap();
@@ -299,7 +305,7 @@ impl PmuEvent {
             if let Some(ref pmu) = self.pmu {
                 glob::glob(&format!("/sys/devices/{}*/type", pmu))
                     .unwrap()
-                    .filter_map(Result::ok)
+                    .filter_map(std::result::Result::ok)
                     .map(|x| {
                         let mut a = attr;
                         a.type_ = std::fs::read_to_string(&x)
@@ -333,17 +339,17 @@ pub struct Pmu {
 
 impl Pmu {
     /// Load PMU event information for local CPU from the specified path.
-    pub fn from_local_cpu(path: String) -> crate::Result<Self> {
+    pub fn from_local_cpu(path: String) -> Result<Self> {
         let cpu_str = crate::arch_specific::get_cpu_string();
         Pmu::from_cpu_str(cpu_str, path)
     }
 
     /// Load CPU-specific PMU information from the specified path.
-    pub fn from_cpu_str(cpu: String, path: String) -> crate::Result<Self> {
+    pub fn from_cpu_str(cpu: String, path: String) -> Result<Self> {
         // Check for global events
         let mut json_files: Vec<String> = std::fs::read_dir(&path)
             .unwrap()
-            .filter_map(Result::ok)
+            .filter_map(std::result::Result::ok)
             .filter(|x| {
                 std::fs::metadata(x.path()).unwrap().is_file()
                     && x.file_name().into_string().unwrap().ends_with(".json")
@@ -355,7 +361,7 @@ impl Pmu {
         let mapfile = std::fs::File::open(format!("{}/{}", &path, "mapfile.csv"))?;
         let mapped_files = BufReader::new(mapfile)
             .lines()
-            .filter_map(Result::ok)
+            .filter_map(std::result::Result::ok)
             .filter(|l| !l.starts_with('#') && !l.starts_with('\n'))
             .filter_map(|l| {
                 let splits: Vec<&str> = l.split(',').collect();
@@ -411,10 +417,28 @@ impl Pmu {
             events: raw_events
                 .iter()
                 .map(|x| PmuEvent::from_raw_event(x, &version))
-                .filter_map(Result::ok)
+                .filter_map(std::result::Result::ok)
                 .collect(),
             raw_events,
         })
+    }
+
+    /// Filter all `PmuEvent`s using `predicate`.
+    #[inline]
+    pub fn filter_events<F>(&self, predicate: F) -> Vec<&PmuEvent>
+    where
+        F: FnMut(&&PmuEvent) -> bool,
+    {
+        self.events.iter().filter(predicate).collect()
+    }
+
+    /// Search for `PmuEvent`s by name.
+    ///
+    /// The `name` field of the function serves as a regex.
+    #[inline]
+    pub fn find_pmu_by_name(&self, name: &str) -> Result<Vec<&PmuEvent>> {
+        let re = Regex::new(name)?;
+        Ok(self.filter_events(|x| re.is_match(&x.name)))
     }
 }
 
@@ -429,6 +453,19 @@ mod tests {
         let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
         let pmu = Pmu::from_local_cpu(pmu_events_path);
         assert!(pmu.is_ok());
+    }
+
+    #[test]
+    fn test_pmu_query() {
+        let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
+        let pmu = crate::Pmu::from_local_cpu(pmu_events_path).unwrap();
+        let evt_name = r"INST_RETIRED.ANY";
+        let event = pmu.find_pmu_by_name(&evt_name);
+        assert!(event.is_ok());
+        let event = event.unwrap();
+        assert!(event.len() >= 1);
+        let event = event.iter().next().unwrap();
+        assert_eq!(event.name, evt_name);
     }
 
     #[test]

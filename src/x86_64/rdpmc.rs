@@ -1,8 +1,7 @@
 //! Utilities specific to the x86_64 architecture.
 
-#![allow(non_snake_case)]
-
 use crate::perf::*;
+use crate::Result;
 
 extern "C" {
     fn rdpmc(counter: u32) -> u64;
@@ -21,47 +20,29 @@ unsafe fn rdpmc(counter: i32) -> i64 {
 #[derive(Debug)]
 pub struct Rdpmc {
     /// File descriptor to performance counter.
-    fd: i32,
+    fd: libc::c_int,
     /// Memory mapped structure storing the performance counter.
     buf: *mut ffi::perf_event_mmap_page,
 }
 
 impl Rdpmc {
-    /// Initialize the performance counter using its raw even descriptor.
-    pub fn open_raw_desc(
-        counter: u64,
-        leader: Option<&Rdpmc>,
-        pid: libc::pid_t,
-        cpuid: libc::c_int,
-    ) -> crate::Result<Self> {
-        let mut attr = ffi::perf_event_attr::default();
-        attr.type_ = (if counter > 10 {
-            ffi::perf_type_id::PERF_TYPE_RAW
-        } else {
-            ffi::perf_type_id::PERF_TYPE_HARDWARE
-        }) as _;
-        attr.size = std::mem::size_of_val(&attr) as _;
-        attr.config = counter;
-        attr.sample_type = ffi::perf_event_sample_format::PERF_SAMPLE_READ as _;
-        attr.set_exclude_kernel(1);
-        attr.set_exclude_hv(1);
-        Rdpmc::open_perf_attr(&attr, leader, pid, cpuid)
-    }
-
-    /// Initialize the performance counter using its a `PerfEventAttr`.
-    pub fn open_perf_attr(
+    /// Initialize the performance counter using its a `perf_event_attr`.
+    ///
+    /// This does not check if the input `attr` corresponds to a CPU event that can be read through
+    /// the `rdpmc` instruction.
+    pub fn open(
         attr: &ffi::perf_event_attr,
-        leader: Option<&Rdpmc>,
+        leader: Option<libc::c_int>,
         pid: libc::pid_t,
         cpuid: libc::c_int,
-    ) -> crate::Result<Rdpmc> {
+    ) -> Result<Rdpmc> {
         let mut new_ctr = Rdpmc {
             fd: perf_event_open(
                 attr,
                 pid,
                 cpuid,
                 match leader {
-                    Some(x) => x.fd,
+                    Some(x) => x,
                     None => -1,
                 },
                 0,
@@ -78,7 +59,11 @@ impl Rdpmc {
                 0,
             ) as *mut ffi::perf_event_mmap_page;
         }
-        Ok(new_ctr)
+        if new_ctr.buf != libc::MAP_FAILED as _ {
+            Ok(new_ctr)
+        } else {
+            Err((libc::MAP_FAILED as i32).into())
+        }
     }
 
     /// Read the performance counter.
@@ -122,21 +107,30 @@ impl Drop for Rdpmc {
     }
 }
 
-// TODO FIX TEST
-/*
 #[cfg(test)]
 mod tests {
     use crate::x86_64::*;
 
     #[test]
-    fn rdpmc() {
-        let counter = Rdpmc::open_raw_desc(0, None, 0, -1);
+    fn test_rdpmc() {
+        let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
+        let pmu = crate::Pmu::from_local_cpu(pmu_events_path).unwrap();
+        let event = pmu
+            .find_pmu_by_name(r"INST_RETIRED.ANY")
+            .unwrap()
+            .pop()
+            .unwrap();
+        let mut attr = event.to_perf_event_attr().pop().unwrap();
+        attr.sample_type = crate::perf::ffi::perf_event_sample_format::PERF_SAMPLE_READ as _;
+        attr.set_exclude_kernel(1);
+        attr.set_exclude_hv(1);
+
+        let counter = Rdpmc::open(&attr, None, 0, -1);
         assert!(counter.is_ok());
         let mut counter = counter.unwrap();
 
         let mut prev = counter.read();
         let thresh = 1000;
-
         loop {
             let next = counter.read();
             if next - prev > thresh {
@@ -148,4 +142,3 @@ mod tests {
         }
     }
 }
-*/

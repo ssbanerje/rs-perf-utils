@@ -18,7 +18,7 @@ impl MsrHandle {
                 libc::O_RDWR,
             )
         } {
-            err if err < 0 => Err(crate::Error::SystemError(err)),
+            err if err < 0 => Err(crate::Error::System(err)),
             fd => Ok(MsrHandle { fd }),
         }
     }

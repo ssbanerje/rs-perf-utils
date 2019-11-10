@@ -126,7 +126,7 @@ pub fn perf_event_open(
             group_fd,
             flags,
         ) {
-            -1 => Err(Error::SystemError(-1)),
+            -1 => Err(Error::System(-1)),
             rc => Ok(rc as libc::c_int),
         }
     }
@@ -139,7 +139,7 @@ pub fn perf_event_ioc_enable(fd: libc::c_int) -> crate::Result<()> {
     unsafe {
         match libc::ioctl(fd, ffi::PERF_EVENT_IOC_ENABLE) {
             0 => Ok(()),
-            rc => Err(Error::SystemError(rc)),
+            rc => Err(Error::System(rc)),
         }
     }
 }
@@ -151,7 +151,7 @@ pub fn perf_event_ioc_disable(fd: libc::c_int) -> crate::Result<()> {
     unsafe {
         match libc::ioctl(fd, ffi::PERF_EVENT_IOC_DISABLE) {
             0 => Ok(()),
-            rc => Err(Error::SystemError(rc)),
+            rc => Err(Error::System(rc)),
         }
     }
 }
@@ -163,7 +163,7 @@ pub fn perf_event_ioc_reset(fd: libc::c_int) -> crate::Result<()> {
     unsafe {
         match libc::ioctl(fd, ffi::PERF_EVENT_IOC_RESET) {
             0 => Ok(()),
-            rc => Err(Error::SystemError(rc)),
+            rc => Err(Error::System(rc)),
         }
     }
 }
@@ -191,7 +191,11 @@ impl PerfVersion {
             .captures(std::str::from_utf8(perf_output_buf.as_slice())?)
             .unwrap();
         let major = matches.get(1).unwrap().as_str().parse::<i32>()?;
-        let minor = matches.get(2).unwrap().as_str().parse::<i32>()?;
+        let mut minor = matches.get(2).unwrap().as_str().parse::<i32>()?;
+
+        if major > 4 {
+            minor = 100; // infinity
+        }
 
         Ok(PerfVersion { major, minor })
     }

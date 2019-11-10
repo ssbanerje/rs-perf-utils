@@ -54,7 +54,7 @@ impl MmappedRingBuffer {
                     extra: [0u8; 256],
                 })
             } else {
-                Err(Error::SystemError(libc::MAP_FAILED as _))
+                Err(Error::System(libc::MAP_FAILED as _))
             }
         }
     }
