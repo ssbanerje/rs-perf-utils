@@ -1,14 +1,11 @@
-//! Utilities to read and process PMU events.
-
-use crate::perf;
-use crate::Result;
-use regex::Regex;
-use std::collections::HashMap;
+use crate::perf::ffi::{perf_event_attr, perf_type_id};
+use crate::perf::PerfVersion;
+use crate::{MetricExpr, Result};
+use log::warn;
 use std::convert::TryInto;
-use std::io::{BufRead, BufReader};
 
 /// Raw event format represented in the JSON event files.
-pub type RawEvent = HashMap<String, String>;
+pub type RawEvent = std::collections::HashMap<String, String>;
 
 /// Abstraction for a performance counter event.
 #[derive(Debug, Default, Clone)]
@@ -42,6 +39,7 @@ pub struct PmuEvent {
 
     metric_group: Option<String>,
     metric_expr: Option<String>,
+    parsed_metric_expr: Option<MetricExpr>,
 }
 
 impl PmuEvent {
@@ -65,7 +63,7 @@ impl PmuEvent {
     }
 
     /// Create a new `PmuEvent` from a `RawEvent`.
-    pub fn from_raw_event(raw_event: &RawEvent, version: &perf::PerfVersion) -> Result<Self> {
+    pub fn from_raw_event(raw_event: &RawEvent, version: &PerfVersion) -> Result<Self> {
         let mut evt = PmuEvent::default();
 
         if let Some(n) = raw_event.get("EventName") {
@@ -147,7 +145,9 @@ impl PmuEvent {
             evt.is_metric = true;
             evt.name = n.clone();
             evt.metric_group = Some(raw_event.get("MetricGroup").unwrap().clone());
-            evt.metric_expr = Some(raw_event.get("MetricExpr").unwrap().clone());
+            let expr = raw_event.get("MetricExpr").unwrap().clone();
+            evt.parsed_metric_expr = Some(MetricExpr::from_str(expr.as_str())?);
+            evt.metric_expr = Some(expr);
         } else {
             return Err(crate::Error::ParsePmu);
         }
@@ -165,6 +165,7 @@ impl PmuEvent {
 
     /// Perf strings for core events.
     fn _get_core_event_string(&self, is_direct: bool, put_name: bool) -> String {
+        assert!(self.umask.is_some() && self.event_code.is_some());
         if is_direct {
             if cfg!(target_arch = "x86_64") {
                 format!(
@@ -256,8 +257,43 @@ impl PmuEvent {
         )
     }
 
+    /// Parse a metric event to get all the underlying PmuEvents.
+    ///
+    /// `events` is a reference to the entire database of events that has to be searched to find the
+    /// correct `PmuEvent` corresponding to the metric.
+    fn _get_metric_events<'a>(&self, events: Option<&'a Vec<PmuEvent>>) -> Vec<&'a PmuEvent> {
+        assert!(self.is_metric);
+        let vars = match self.parsed_metric_expr {
+            Some(ref expr) => expr.get_counters(),
+            _ => unreachable!(), // If this is a metric, the metric_expr must be set!
+        };
+
+        if let Some(evts) = events {
+            let found: Vec<&PmuEvent> = evts
+                .iter()
+                .filter(|evt| vars.contains(&&evt.name))
+                .collect();
+            if found.is_empty() {
+                warn!(
+                    "Could not resolve one of {:?} in event {}, {}",
+                    vars,
+                    self.name,
+                    evts.len()
+                );
+            }
+            found
+        } else {
+            // Had no events
+            vec![]
+        }
+    }
+
     /// Get string for perf command line tool from this `PmuEvent`.
-    pub fn to_perf_string(&self, pv: &perf::PerfVersion) -> String {
+    ///
+    /// `events` is a reference to the entire database of events that has to be searched to find the
+    /// correct `PmuEvent` corresponding to the metric. If one is sure that `self` is not a metric
+    /// event,
+    pub fn to_perf_string(&self, pv: &PerfVersion, events: Option<&Vec<PmuEvent>>) -> String {
         if !self.is_metric {
             if self.unit.is_none() {
                 self._get_core_event_string(pv.direct(), pv.has_name())
@@ -265,8 +301,11 @@ impl PmuEvent {
                 self._get_uncore_event_string(pv.has_name())
             }
         } else {
-            // TODO Implement metrics
-            unimplemented!()
+            self._get_metric_events(events)
+                .iter()
+                .map(|x| x.to_perf_string(pv, None))
+                .collect::<Vec<String>>()
+                .join(",")
         }
     }
 
@@ -274,12 +313,12 @@ impl PmuEvent {
     ///
     /// If this event is a derived event, then it returns multiple `perf_event_attrs` corresponding
     /// to all events that need to be collected.
-    pub fn to_perf_event_attr(&self) -> Vec<perf::ffi::perf_event_attr> {
+    pub fn to_perf_event_attr(&self, events: Option<&Vec<PmuEvent>>) -> Vec<perf_event_attr> {
         // TODO Unsure if this works on a PowerPC machine
         if !self.is_metric {
-            let mut attr = perf::ffi::perf_event_attr::default();
+            let mut attr = perf_event_attr::default();
             attr.size = std::mem::size_of_val(&attr).try_into().unwrap();
-            attr.type_ = perf::ffi::perf_type_id::PERF_TYPE_RAW as _;
+            attr.type_ = perf_type_id::PERF_TYPE_RAW as _;
             if let Some(e) = self.event_code {
                 attr.config |= e & 0xFF;
             }
@@ -320,164 +359,35 @@ impl PmuEvent {
                 vec![attr]
             }
         } else {
-            // TODO Implement
-            unimplemented!()
+            self._get_metric_events(events)
+                .iter()
+                .flat_map(|x| x.to_perf_event_attr(None))
+                .collect()
         }
     }
 }
 
-/// Provides the ability to parse and interact with CPU specific PMU counters using their JSON descriptions.
-#[derive(Default, Debug)]
-pub struct Pmu {
-    /// String identifying CPU.
-    pub cpu_str: String,
-    /// List of parsed performance counter events.
-    pub events: Vec<PmuEvent>,
-    /// Raw JSON-based performance counter events for the `cpu_str`.
-    raw_events: Vec<RawEvent>,
-}
-
-impl Pmu {
-    /// Load PMU event information for local CPU from the specified path.
-    pub fn from_local_cpu(path: String) -> Result<Self> {
-        let cpu_str = crate::arch_specific::get_cpu_string();
-        Pmu::from_cpu_str(cpu_str, path)
-    }
-
-    /// Load CPU-specific PMU information from the specified path.
-    pub fn from_cpu_str(cpu: String, path: String) -> Result<Self> {
-        // Check for global events
-        let mut json_files: Vec<String> = std::fs::read_dir(&path)
-            .unwrap()
-            .filter_map(std::result::Result::ok)
-            .filter(|x| {
-                std::fs::metadata(x.path()).unwrap().is_file()
-                    && x.file_name().into_string().unwrap().ends_with(".json")
-            })
-            .map(|x| x.file_name().into_string().unwrap())
-            .collect();
-
-        // Check mapfile for paths
-        let mapfile = std::fs::File::open(format!("{}/{}", &path, "mapfile.csv"))?;
-        let mapped_files = BufReader::new(mapfile)
-            .lines()
-            .filter_map(std::result::Result::ok)
-            .filter(|l| !l.starts_with('#') && !l.starts_with('\n'))
-            .filter_map(|l| {
-                let splits: Vec<&str> = l.split(',').collect();
-                if Regex::new(splits[0]).unwrap().is_match(&cpu) {
-                    Some(String::from(splits[2]))
-                } else {
-                    None
-                }
-            })
-            .flat_map(|f: String| {
-                let full_path = format!("{}/{}", path, f);
-                if std::fs::metadata(&full_path).unwrap().is_file() {
-                    vec![full_path]
-                } else {
-                    std::fs::read_dir(&full_path)
-                        .unwrap()
-                        .filter_map(|x| match x {
-                            Ok(f) => Some(format!(
-                                "{}/{}",
-                                &full_path,
-                                f.file_name().into_string().unwrap()
-                            )),
-                            _ => None,
-                        })
-                        .collect()
-                }
-            });
-        json_files.extend(mapped_files);
-
-        let raw_events: Vec<RawEvent> = json_files
-            .iter()
-            .flat_map(|f| {
-                let s = std::fs::read_to_string(f).unwrap();
-                let mut j: Vec<HashMap<String, String>> = serde_json::from_str(s.as_str()).unwrap();
-                j.iter_mut().for_each(|x| {
-                    // Add the file name as a topic
-                    let fname = std::path::Path::new(&f)
-                        .file_name()
-                        .unwrap()
-                        .to_str()
-                        .unwrap();
-                    x.entry(String::from("Topic"))
-                        .or_insert_with(|| String::from(&fname[0..fname.len() - 5]));
-                });
-                j
-            })
-            .collect();
-
-        // Construct the Pmu
-        let version = perf::PerfVersion::get_details_from_tool()?;
-        Ok(Pmu {
-            cpu_str: cpu,
-            events: raw_events
-                .iter()
-                .map(|x| PmuEvent::from_raw_event(x, &version))
-                .filter_map(std::result::Result::ok)
-                .collect(),
-            raw_events,
-        })
-    }
-
-    /// Filter all `PmuEvent`s using `predicate`.
-    #[inline]
-    pub fn filter_events<F>(&self, predicate: F) -> Vec<&PmuEvent>
-    where
-        F: FnMut(&&PmuEvent) -> bool,
-    {
-        self.events.iter().filter(predicate).collect()
-    }
-
-    /// Search for `PmuEvent`s by name.
-    ///
-    /// The `name` field of the function serves as a regex.
-    #[inline]
-    pub fn find_pmu_by_name(&self, name: &str) -> Result<Vec<&PmuEvent>> {
-        let re = Regex::new(name)?;
-        Ok(self.filter_events(|x| re.is_match(&x.name)))
+impl PartialEq for PmuEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::perf;
+    use crate::Pmu;
     use std::process::{Command, Stdio};
-
-    #[test]
-    fn test_pmu_construction() {
-        let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
-        let pmu = Pmu::from_local_cpu(pmu_events_path);
-        assert!(pmu.is_ok());
-    }
-
-    #[test]
-    fn test_pmu_query() {
-        let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
-        let pmu = crate::Pmu::from_local_cpu(pmu_events_path).unwrap();
-        let evt_name = r"INST_RETIRED.ANY";
-        let event = pmu.find_pmu_by_name(&evt_name);
-        assert!(event.is_ok());
-        let event = event.unwrap();
-        assert!(event.len() >= 1);
-        let event = event.iter().next().unwrap();
-        assert_eq!(event.name, evt_name);
-    }
 
     #[test]
     fn test_pmuevent_to_perfstring() {
         let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
         let pmu = Pmu::from_local_cpu(pmu_events_path).unwrap();
-        let pv = perf::PerfVersion::get_details_from_tool().unwrap();
+        let pv = PerfVersion::get_details_from_tool().unwrap();
         let perf_strings: Vec<String> = pmu
             .events
             .iter()
-            .map(|x| x.to_perf_string(&pv))
-            .filter(|x| !x.is_empty())
+            .map(|x| x.to_perf_string(&pv, Some(&pmu.events)))
             .collect();
         for evt in perf_strings.iter() {
             let stat = Command::new("perf")
@@ -495,7 +405,7 @@ mod tests {
         let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
         let pmu = Pmu::from_local_cpu(pmu_events_path).unwrap();
         for evt in pmu.events.iter() {
-            let attr = evt.to_perf_event_attr();
+            let attr = evt.to_perf_event_attr(Some(&pmu.events));
             assert!(!attr.is_empty());
         }
     }

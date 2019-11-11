@@ -191,11 +191,11 @@ impl PerfVersion {
             .captures(std::str::from_utf8(perf_output_buf.as_slice())?)
             .unwrap();
         let major = matches.get(1).unwrap().as_str().parse::<i32>()?;
-        let mut minor = matches.get(2).unwrap().as_str().parse::<i32>()?;
-
-        if major > 4 {
-            minor = 100; // infinity
-        }
+        let minor = if major > 4 {
+            1 << 10 // infinity (hopefully perf versions never reach this high)
+        } else {
+            matches.get(2).unwrap().as_str().parse::<i32>()?
+        };
 
         Ok(PerfVersion { major, minor })
     }
@@ -260,7 +260,6 @@ mod tests {
         let fd = perf_event_open(&attr, 0, -1, -1, 0).unwrap();
         perf_event_ioc_reset(fd).unwrap();
         perf_event_ioc_enable(fd).unwrap();
-        println!("/proc/sys/kernel/perf_event_paranoid -> {}", paranoid);
         perf_event_ioc_disable(fd).unwrap();
         let mut count: libc::c_ulonglong = 0;
         unsafe {

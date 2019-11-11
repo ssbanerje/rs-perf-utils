@@ -17,6 +17,9 @@ pub enum Error {
     /// Errors caused by failing to read a `&[u8]` to a `str`.
     #[fail(display = "Parse Error - {}", _0)]
     ParseUtf8(#[cause] std::str::Utf8Error),
+    /// Errors caused by malformed metric expression strings for PMU events.
+    #[fail(display = "Parse Error - {}", _0)]
+    ParseMetricExpr(#[cause] pest::error::Error<crate::pmu::Rule>),
     /// Errors originating from calls to `libc` or other system utilties.
     #[fail(display = "System Error - RC={}", _0)]
     System(i32),
@@ -56,6 +59,13 @@ impl From<std::str::Utf8Error> for Error {
     #[inline]
     fn from(err: std::str::Utf8Error) -> Self {
         Error::ParseUtf8(err)
+    }
+}
+
+impl From<pest::error::Error<crate::pmu::Rule>> for Error {
+    #[inline]
+    fn from(err: pest::error::Error<crate::pmu::Rule>) -> Self {
+        Error::ParseMetricExpr(err)
     }
 }
 

@@ -1,8 +1,11 @@
+use log::info;
 use perf_utils::perf::PerfVersion;
 use perf_utils::Pmu;
 use std::env::*;
 
 fn main() {
+    env_logger::init();
+
     // Get path to PMU events
     let prg_args = args().skip(1).next();
     let pmu_events_path = if let Some(a) = prg_args {
@@ -19,10 +22,9 @@ fn main() {
     let perf_strings: Vec<String> = pmu
         .events
         .iter()
-        .map(|x| format!("{} -> {}", x.name, x.to_perf_string(&pv)))
-        .filter(|x| !x.is_empty())
+        .map(|x| format!("{} -> {}", x.name, x.to_perf_string(&pv, Some(&pmu.events))))
         .collect();
 
     // Dump perf strings
-    println!("{:#?}", perf_strings)
+    info!("{:#?}", perf_strings)
 }

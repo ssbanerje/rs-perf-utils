@@ -110,6 +110,7 @@ impl Drop for Rdpmc {
 #[cfg(test)]
 mod tests {
     use crate::x86_64::*;
+    use log::info;
 
     #[test]
     fn test_rdpmc() {
@@ -120,7 +121,7 @@ mod tests {
             .unwrap()
             .pop()
             .unwrap();
-        let mut attr = event.to_perf_event_attr().pop().unwrap();
+        let mut attr = event.to_perf_event_attr(Some(&pmu.events)).pop().unwrap();
         attr.sample_type = crate::perf::ffi::perf_event_sample_format::PERF_SAMPLE_READ as _;
         attr.set_exclude_kernel(1);
         attr.set_exclude_hv(1);
@@ -134,7 +135,7 @@ mod tests {
         loop {
             let next = counter.read();
             if next - prev > thresh {
-                println!("{}, {}", next, prev);
+                info!("{}, {}", next, prev);
                 break;
             }
             prev = next;

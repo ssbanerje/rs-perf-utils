@@ -59,7 +59,6 @@ mod tests {
     #[test]
     fn test_cpu_str() {
         let cpu_str = get_cpu_string();
-        println!("{}", cpu_str);
         assert!(!cpu_str.is_empty());
     }
 }

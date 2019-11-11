@@ -8,7 +8,7 @@ pub use errors::{Error, Result};
 pub mod perf;
 
 mod pmu;
-pub use pmu::{Pmu, PmuEvent, RawEvent};
+pub use pmu::{MetricExpr, Pmu, PmuEvent, RawEvent};
 
 mod performance_counters;
 pub use performance_counters::{EventRecord, Events, MmappedRingBuffer};

@@ -1,0 +1,17 @@
+WHITESPACE = _{" "}
+
+// Terminals
+num = @{ (ASCII_DIGIT | ".") + }
+op = _{ add | sub | mul | div | comma }
+  add = @{ "+" }
+  sub = @{ "-" }
+  mul = @{ "*" }
+  div = @{ "/" }
+  comma = @{ "," }
+ident = ${ (ASCII_ALPHANUMERIC | "=" | "-" | "#" | "_" | ":" | "." | "@" | "\\" | ",")+ }
+
+// Expressions
+expr = { min ~ ife? | term ~ (op ~ term)* ~ ife? }
+ife = { "if" ~ expr ~ ("else" ~ expr)? }
+min = { "min" ~ "(" ~ expr ~ ")" }
+term = _{ num | ident | "(" ~ expr ~ ")"}
