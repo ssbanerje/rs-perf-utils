@@ -13,20 +13,15 @@ pub use pmu::{MetricExpr, Pmu, PmuEvent, RawEvent};
 mod performance_counters;
 pub use performance_counters::{EventRecord, Events, MmappedRingBuffer};
 
+/// Architecture specific implementation details of performance counters:
 #[cfg(target_arch = "x86_64")]
-mod x86_64;
+#[path = "arch/x86_64/mod.rs"]
+pub mod arch;
 
+/// Architecture specific implementation details of performance counters:
 #[cfg(target_arch = "powerpc64")]
-mod powerpc64;
-
-/// Architecture specific implementation details of performance counters.
-pub mod arch_specific {
-    #[cfg(target_arch = "x86_64")]
-    pub use crate::x86_64::*;
-
-    #[cfg(target_arch = "powerpc64")]
-    pub use crate::powerpc64::*;
-}
+#[path = "arch/powerpc64/mod.rs"]
+pub mod arch;
 
 mod pci;
 pub use pci::PciHandle;

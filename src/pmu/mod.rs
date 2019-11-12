@@ -8,8 +8,8 @@ use std::io::{BufRead, BufReader};
 mod events;
 pub use events::{PmuEvent, RawEvent};
 
-mod metric_expressions;
-pub use metric_expressions::{MetricExpr, Rule};
+mod metrics;
+pub use metrics::{MetricExpr, Rule};
 
 /// Provides the ability to parse and interact with CPU specific PMU counters using their JSON descriptions.
 #[derive(Default, Debug)]
@@ -25,7 +25,7 @@ pub struct Pmu {
 impl Pmu {
     /// Load PMU event information for local CPU from the specified path.
     pub fn from_local_cpu(path: String) -> crate::Result<Self> {
-        let cpu_str = crate::arch_specific::get_cpu_string();
+        let cpu_str = crate::arch::get_cpu_string();
         Pmu::from_cpu_str(cpu_str, path)
     }
 

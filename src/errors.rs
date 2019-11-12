@@ -2,7 +2,7 @@
 
 use failure::Fail;
 
-/// Custom type corresponding to Errors in this crate.
+/// Errors produced by this crate.
 #[derive(Debug, Fail)]
 pub enum Error {
     /// Errors originating from calls to `std::io::*`.

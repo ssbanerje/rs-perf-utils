@@ -109,7 +109,7 @@ impl Drop for Rdpmc {
 
 #[cfg(test)]
 mod tests {
-    use crate::x86_64::*;
+    use super::*;
     use log::info;
 
     #[test]

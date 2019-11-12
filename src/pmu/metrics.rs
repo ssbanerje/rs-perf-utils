@@ -21,7 +21,7 @@ lazy_static! {
     };
 }
 
-/// A parsed metric event (sub) expression.
+/// Parsed (sub)expression from a `PmuEvent` dealing with derived events.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetricExpr {
     /// A constant number.
