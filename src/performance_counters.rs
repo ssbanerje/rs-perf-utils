@@ -2,6 +2,7 @@
 
 use crate::errors::Error;
 use crate::perf::*;
+use nix::libc;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::SeqCst;
 
@@ -54,7 +55,7 @@ impl MmappedRingBuffer {
                     extra: [0u8; 256],
                 })
             } else {
-                Err(Error::System(libc::MAP_FAILED as _))
+                Err(Error::System(nix::Error::Sys(nix::errno::Errno::last())))
             }
         }
     }

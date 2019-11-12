@@ -1,3 +1,5 @@
+use nix::libc;
+
 #[derive(Debug)]
 /// Handle to PCI device to read and write data
 pub struct PciHandle {
@@ -29,7 +31,9 @@ impl PciHandle {
         };
 
         match unsafe { libc::open(path.as_ptr() as _, libc::O_RDWR) } {
-            err if err < 0 => Err(crate::Error::System(err)),
+            err if err < 0 => Err(crate::Error::System(nix::Error::Sys(
+                nix::errno::Errno::last(),
+            ))),
             fd => Ok(PciHandle {
                 fd,
                 bus,

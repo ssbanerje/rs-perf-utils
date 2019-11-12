@@ -2,6 +2,7 @@
 
 use crate::perf::*;
 use crate::Result;
+use nix::libc;
 
 extern "C" {
     fn rdpmc(counter: u32) -> u64;

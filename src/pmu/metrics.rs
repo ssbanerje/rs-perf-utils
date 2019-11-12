@@ -46,7 +46,7 @@ pub enum MetricExpr {
 
 impl MetricExpr {
     /// Create an new `MetricExpr` from a supplied `&str`.
-    pub fn from_str(input: &str) -> Result<MetricExpr> {
+    pub fn parse_str(input: &str) -> Result<MetricExpr> {
         let expr = MetricExprParser::parse(Rule::expr, input)?;
         Ok(MetricExpr::_to_expr(expr))
     }
@@ -110,7 +110,7 @@ mod tests {
         let metrics: Vec<MetricExpr> = test_strings
             .iter()
             .map(|x| {
-                let expr = MetricExpr::from_str(&x);
+                let expr = MetricExpr::parse_str(&x);
                 assert!(expr.is_ok());
                 expr.unwrap()
             })

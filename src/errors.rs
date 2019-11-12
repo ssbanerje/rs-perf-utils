@@ -21,8 +21,8 @@ pub enum Error {
     #[fail(display = "Parse Error - {}", _0)]
     ParseMetricExpr(#[cause] pest::error::Error<crate::pmu::Rule>),
     /// Errors originating from calls to `libc` or other system utilties.
-    #[fail(display = "System Error - RC={}", _0)]
-    System(i32),
+    #[fail(display = "System Error - {}", _0)]
+    System(#[cause] nix::Error),
     /// Errors in parsing PMU event JSON files.
     ///
     /// This can be because of a malformed JSON file or because parsing of some JSON formats is
@@ -69,10 +69,18 @@ impl From<pest::error::Error<crate::pmu::Rule>> for Error {
     }
 }
 
+impl From<nix::Error> for Error {
+    #[inline]
+    fn from(err: nix::Error) -> Self {
+        Error::System(err)
+    }
+}
+
 impl From<i32> for Error {
     #[inline]
     fn from(err: i32) -> Self {
-        Error::System(err)
+        let e = nix::errno::from_i32(err);
+        Error::System(nix::Error::Sys(e))
     }
 }
 

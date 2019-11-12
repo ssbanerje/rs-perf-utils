@@ -1,5 +1,7 @@
 //! Utilities to read and write model specific registers (MSRs).
 
+use nix::libc;
+
 #[derive(Debug)]
 /// Handle to read and write model specific registers.
 ///
@@ -18,7 +20,9 @@ impl MsrHandle {
                 libc::O_RDWR,
             )
         } {
-            err if err < 0 => Err(crate::Error::System(err)),
+            err if err < 0 => Err(crate::Error::System(nix::Error::Sys(
+                nix::errno::Errno::last(),
+            ))),
             fd => Ok(MsrHandle { fd }),
         }
     }

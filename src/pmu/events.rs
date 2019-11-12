@@ -146,7 +146,7 @@ impl PmuEvent {
             evt.name = n.clone();
             evt.metric_group = Some(raw_event.get("MetricGroup").unwrap().clone());
             let expr = raw_event.get("MetricExpr").unwrap().clone();
-            evt.parsed_metric_expr = Some(MetricExpr::from_str(expr.as_str())?);
+            evt.parsed_metric_expr = Some(MetricExpr::parse_str(expr.as_str())?);
             evt.metric_expr = Some(expr);
         } else {
             return Err(crate::Error::ParsePmu);
