@@ -8,6 +8,9 @@ pub enum Error {
     /// Errors originating from calls to `std::io::*`.
     #[fail(display = "IO Error - {}", _0)]
     IO(#[cause] std::io::Error),
+    /// Errors originating from calls to `std::env::*`.
+    #[fail(display = "Env Error - {}", _0)]
+    Env(#[cause] std::env::VarError),
     /// Errors originating from calls to `regex::*`.
     #[fail(display = "Regex Error - {}", _0)]
     Regex(#[cause] regex::Error),
@@ -34,55 +37,32 @@ pub enum Error {
     PmuNotFound,
 }
 
-impl From<std::io::Error> for Error {
+impl Error {
+    /// Create a new instance of error from the `errno` variable.
     #[inline]
-    fn from(err: std::io::Error) -> Self {
-        Error::IO(err)
+    pub fn from_errno() -> Self {
+        Error::System(nix::Error::Sys(nix::errno::Errno::last()))
     }
 }
 
-impl From<regex::Error> for Error {
-    #[inline]
-    fn from(err: regex::Error) -> Self {
-        Error::Regex(err)
-    }
+macro_rules! error_from {
+    ($et: ty => $cet: expr) => {
+        impl From<$et> for Error {
+            #[inline]
+            fn from(err: $et) -> Self {
+                $cet(err)
+            }
+        }
+    };
 }
 
-impl From<std::num::ParseIntError> for Error {
-    #[inline]
-    fn from(err: std::num::ParseIntError) -> Self {
-        Error::ParseInt(err)
-    }
-}
-
-impl From<std::str::Utf8Error> for Error {
-    #[inline]
-    fn from(err: std::str::Utf8Error) -> Self {
-        Error::ParseUtf8(err)
-    }
-}
-
-impl From<pest::error::Error<crate::pmu::Rule>> for Error {
-    #[inline]
-    fn from(err: pest::error::Error<crate::pmu::Rule>) -> Self {
-        Error::ParseMetricExpr(err)
-    }
-}
-
-impl From<nix::Error> for Error {
-    #[inline]
-    fn from(err: nix::Error) -> Self {
-        Error::System(err)
-    }
-}
-
-impl From<i32> for Error {
-    #[inline]
-    fn from(err: i32) -> Self {
-        let e = nix::errno::from_i32(err);
-        Error::System(nix::Error::Sys(e))
-    }
-}
+error_from!(std::io::Error => Error::IO);
+error_from!(std::env::VarError => Error::Env);
+error_from!(regex::Error => Error::Regex);
+error_from!(std::num::ParseIntError => Error::ParseInt);
+error_from!(std::str::Utf8Error => Error::ParseUtf8);
+error_from!(pest::error::Error<crate::pmu::Rule> => Error::ParseMetricExpr);
+error_from!(nix::Error => Error::System);
 
 /// Result type used in this crate.
 pub type Result<T> = std::result::Result<T, Error>;

@@ -3,7 +3,7 @@ use perf_utils::perf::PerfVersion;
 use perf_utils::Pmu;
 use std::env::*;
 
-fn main() {
+fn main() -> perf_utils::Result<()> {
     env_logger::init();
 
     // Get path to PMU events
@@ -15,8 +15,8 @@ fn main() {
     };
 
     // Parse metadata
-    let pmu = Pmu::from_local_cpu(pmu_events_path).unwrap();
-    let pv = PerfVersion::get_details_from_tool().unwrap();
+    let pmu = Pmu::from_local_cpu(pmu_events_path)?;
+    let pv = PerfVersion::get_details_from_tool()?;
 
     // Get perf strings
     let perf_strings: Vec<String> = pmu
@@ -26,5 +26,7 @@ fn main() {
         .collect();
 
     // Dump perf strings
-    info!("{:#?}", perf_strings)
+    info!("{:#?}", perf_strings);
+
+    Ok(())
 }

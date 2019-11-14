@@ -55,7 +55,7 @@ impl MmappedRingBuffer {
                     extra: [0u8; 256],
                 })
             } else {
-                Err(Error::System(nix::Error::Sys(nix::errno::Errno::last())))
+                Err(Error::from_errno())
             }
         }
     }

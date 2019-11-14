@@ -9,13 +9,11 @@ pub struct PciHandlePhysicalAddress {
 
 impl PciHandlePhysicalAddress {
     /// Read data from handle
-    #[inline]
     pub fn read<T>(&self, offset: i64, val: &mut T) -> isize {
         self.handle(offset, val)
     }
 
     /// Write data to handle.
-    #[inline]
     pub fn write<T>(&self, offset: i64, val: T) -> isize {
         self.handle(offset, val)
     }
@@ -61,13 +59,11 @@ pub struct PciHandleMMAP {
 
 impl PciHandleMMAP {
     /// Read data from handle
-    #[inline]
     pub fn read<T>(&self, offset: i64, val: &mut T) -> isize {
         self.handle(offset, val)
     }
 
     /// Write data to handle.
-    #[inline]
     pub fn write<T>(&self, offset: i64, val: T) -> isize {
         self.handle(offset, val)
     }

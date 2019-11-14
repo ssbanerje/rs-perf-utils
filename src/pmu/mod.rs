@@ -109,7 +109,6 @@ impl Pmu {
     }
 
     /// Filter all `PmuEvent`s using `predicate`.
-    #[inline]
     pub fn filter_events<F>(&self, predicate: F) -> Vec<&PmuEvent>
     where
         F: FnMut(&&PmuEvent) -> bool,
@@ -120,7 +119,6 @@ impl Pmu {
     /// Search for `PmuEvent`s by name.
     ///
     /// The `name` field of the function serves as a regex.
-    #[inline]
     pub fn find_pmu_by_name(&self, name: &str) -> crate::Result<Vec<&PmuEvent>> {
         let re = Regex::new(name)?;
         Ok(self.filter_events(|x| re.is_match(&x.name)))

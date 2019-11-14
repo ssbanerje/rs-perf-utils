@@ -26,7 +26,7 @@ pub fn perf_event_open(
             group_fd,
             flags,
         ) {
-            -1 => Err(Error::System(nix::Error::Sys(nix::errno::Errno::last()))),
+            -1 => Err(Error::from_errno()),
             rc => Ok(rc as libc::c_int),
         }
     }

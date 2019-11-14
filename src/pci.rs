@@ -31,9 +31,7 @@ impl PciHandle {
         };
 
         match unsafe { libc::open(path.as_ptr() as _, libc::O_RDWR) } {
-            err if err < 0 => Err(crate::Error::System(nix::Error::Sys(
-                nix::errno::Errno::last(),
-            ))),
+            err if err < 0 => Err(crate::Error::from_errno()),
             fd => Ok(PciHandle {
                 fd,
                 bus,

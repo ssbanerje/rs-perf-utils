@@ -20,9 +20,7 @@ impl MsrHandle {
                 libc::O_RDWR,
             )
         } {
-            err if err < 0 => Err(crate::Error::System(nix::Error::Sys(
-                nix::errno::Errno::last(),
-            ))),
+            err if err < 0 => Err(crate::Error::from_errno()),
             fd => Ok(MsrHandle { fd }),
         }
     }

@@ -1,15 +1,8 @@
 fn generate_kernel_bindings() {
-    let uname = std::process::Command::new("uname")
-        .arg("-r")
-        .output()
-        .unwrap()
-        .stdout;
-    let kernel_version = std::str::from_utf8(uname.as_slice()).unwrap();
-    let kernel_header_wrapper = "src/kernel_headers.h";
+    let kernel_header_wrapper = "src/perf/kernel_headers.h";
     println!("cargo:rerun-if-changed={}", kernel_header_wrapper);
     let bindings = bindgen::Builder::default()
         .header(kernel_header_wrapper)
-        .clang_arg(format!("-I/lib/modules/{}/build/include", kernel_version))
         .derive_debug(true)
         .derive_default(true)
         .rustified_enum("*")

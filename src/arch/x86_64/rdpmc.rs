@@ -63,7 +63,7 @@ impl Rdpmc {
         if new_ctr.buf != libc::MAP_FAILED as _ {
             Ok(new_ctr)
         } else {
-            Err((libc::MAP_FAILED as i32).into())
+            Err(crate::Error::from_errno())
         }
     }
 

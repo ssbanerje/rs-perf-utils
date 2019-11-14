@@ -35,37 +35,31 @@ impl PerfVersion {
     }
 
     /// Get major version.
-    #[inline]
     pub fn major(&self) -> i32 {
         self.major
     }
 
-    /// Get minor version
-    #[inline]
+    /// Get minor version.
     pub fn minor(&self) -> i32 {
         self.minor
     }
 
     /// Allows for direct access.
-    #[inline]
     pub fn direct(&self) -> bool {
         self.minor < 4
     }
 
     /// Can have name attribute in event string.
-    #[inline]
     pub fn has_name(&self) -> bool {
         self.minor >= 4
     }
 
     /// Allows setting offcore response.
-    #[inline]
     pub fn offcore(&self) -> bool {
         !self.direct() && Path::new("/sys/devices/cpu/format/offcore_rsp").exists()
     }
 
     /// Allows setting load latency.
-    #[inline]
     pub fn ldlat(&self) -> bool {
         !self.direct() && Path::new("/sys/devices/cpu/format/ldlat").exists()
     }
