@@ -37,7 +37,7 @@ pub fn perf_event_open(
     cpu: libc::c_int,
     group_fd: libc::c_int,
     flags: libc::c_ulong,
-) -> Result<libc::c_int> {
+) -> Result<std::os::unix::io::RawFd> {
     unsafe {
         let fd = libc::syscall(
             libc::SYS_perf_event_open,
@@ -49,7 +49,7 @@ pub fn perf_event_open(
         );
         match fd {
             -1 => Err(Error::from_errno()),
-            rc => Ok(rc as libc::c_int),
+            rc => Ok(rc as _),
         }
     }
 }
@@ -150,6 +150,13 @@ impl perf_event_attr {
             cfg2,
             self._get_event_modifiers()
         ))
+    }
+}
+
+// Extend perf_event_type
+impl From<u32> for perf_event_type {
+    fn from(val: u32) -> perf_event_type {
+        unsafe { std::mem::transmute(val) }
     }
 }
 

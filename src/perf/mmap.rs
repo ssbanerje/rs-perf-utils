@@ -2,13 +2,40 @@
 
 use crate::perf::*;
 use crate::Result;
+use byteorder::{NativeEndian, ReadBytesExt};
+use lazy_static::lazy_static;
+use log::debug;
 use nix::libc;
 use nix::sys::mman;
 use std::convert::TryInto;
 
+lazy_static! {
+    /// Size of a single memory page on the machine.
+    pub static ref PAGE_SIZE: usize = {
+        nix::unistd::sysconf(nix::unistd::SysconfVar::PAGE_SIZE)
+            .unwrap()
+            .unwrap()
+            .try_into()
+            .unwrap()
+    };
+}
+
+/// Internal implementation of the `read_data_head` function.
+unsafe fn _read_data_head(header: &ffi::perf_event_mmap_page) -> u64 {
+    let head = std::ptr::read_volatile(&header.data_head);
+    std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+    head
+}
+
+/// Internal implementation og the `write_data_tail` function.
+unsafe fn _write_data_tail(header: &mut ffi::perf_event_mmap_page, value: u64) {
+    std::sync::atomic::fence(std::sync::atomic::Ordering::AcqRel);
+    std::ptr::write_volatile(&mut header.data_tail, value);
+}
+
 /// Userspace wrapper for the sampled/mmaped perf events.
 ///
-/// Memory layout:
+/// # Memory layout
 /// ```text
 /// ┌───── header ─────┐  ▲
 /// │                  │  │
@@ -26,14 +53,14 @@ use std::convert::TryInto;
 pub struct RingBuffer {
     /// Metadata of the ring buffer.
     pub header: *mut ffi::perf_event_mmap_page,
-    /// The size of the allocation made using `mmap`.
-    total_alloc_size: usize,
-    /// Size in bytes of the event records in the ring buffer.
-    size: usize,
     /// Pointer to the beginning of the event records.
-    base: *mut u8,
-    /// Extra memory in case the ring buffer overflows.
-    extra: [u64; 32], // Need 256 bytes defined like this to use the derive Debug macro
+    pub base: *mut u8,
+    /// Size in bytes of the event records in the ring buffer.
+    pub size: usize,
+    /// Total number of bytes read from the buffer.
+    ///
+    /// This is used to set `data_tail`.
+    total_bytes_read: u64,
 }
 
 impl RingBuffer {
@@ -43,105 +70,169 @@ impl RingBuffer {
     /// `npages` must be a power of 2. The call will panic otherwise.
     pub fn new(fd: libc::c_int, npages: usize) -> Result<Self> {
         assert_eq!(npages & (npages - 1), 0); // Check to see if npages is a power of 2
-        let pagesize: usize = nix::unistd::sysconf(nix::unistd::SysconfVar::PAGE_SIZE)?
-            .unwrap()
-            .try_into()
-            .unwrap();
-        let rb = unsafe {
-            let header = mman::mmap(
+        let header = unsafe {
+            mman::mmap(
                 std::ptr::null_mut(),
-                pagesize * (npages + 1),
+                *PAGE_SIZE * (npages + 1),
                 mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE,
                 mman::MapFlags::MAP_SHARED,
                 fd,
                 0,
-            )? as *mut ffi::perf_event_mmap_page;
-            RingBuffer {
-                header,
-                total_alloc_size: pagesize * (npages + 1),
-                size: pagesize * npages,
-                base: header.add(1) as *mut u8,
-                extra: [0u64; 32],
-            }
+            )? as *mut ffi::perf_event_mmap_page
+        };
+        let rb = RingBuffer {
+            header,
+            base: unsafe { (header as *mut u8).add(*PAGE_SIZE) },
+            size: *PAGE_SIZE * npages,
+            total_bytes_read: 0,
         };
         Ok(rb)
     }
 
-    /// Access the events structure in the ring buffer.
-    pub fn events(&mut self) -> RingBufferEvents {
-        let header = unsafe { &mut *(self.header) };
-        let head = header.data_head as isize;
-        let tail = header.data_tail as isize;
-        let size = self.size as isize;
+    /// Get an iterator over the events that have been added to the buffer from the kernel.
+    ///
+    /// The iterator will not update as new events are added, it only contains elements present
+    /// in the ring buffer at the time of the call.
+    ///
+    /// The iterator will will not advance the tail of the buffer. Doing so will require explicit
+    /// calls to `advance`.
+    pub fn events(&mut self) -> RingBufferIter {
+        RingBufferIter::new(self)
+    }
+
+    /// Notify the kernel that `num` elements of samples has been read from the `RingBuffer`.
+    ///
+    /// The call will clear the buffer if `None` is passed to the `num` field.
+    pub fn advance(&mut self, num: Option<usize>) {
+        // Get the position of the buffer to advance data_tail
+        let header = self.header;
+        let mut iter = self.events();
+        let bytes_read = if let Some(n) = num {
+            let _ = iter.nth(n);
+            iter.total_bytes_read
+        } else {
+            let _ = iter.try_fold(0, |_, _| Some(0)); // goto last entry
+            iter.total_bytes_read
+        };
+        self.total_bytes_read += bytes_read;
+
+        // Write value to data_tail
         unsafe {
-            RingBufferEvents {
-                header: &mut *(self.header),
-                head: head as _,
-                base: self.base,
-                next: self.base.offset(tail % size),
-                end: self.base.offset(head % size),
-                limit: self.base.offset(size),
-                extra: self.extra.as_mut_ptr() as *mut u8,
-                marker: std::marker::PhantomData,
-            }
+            _write_data_tail(&mut *header, self.total_bytes_read);
         }
+    }
+
+    /// Checks whether there are pending events.
+    ///
+    /// Returns `true` if there are pending events.
+    ///
+    /// Subsequent calls to `event_pending` and `events` are not guaranteed to be perform an atomic
+    /// check (i.e., events can be enqueued into the buffer in between calls).
+    pub fn events_pending(&self) -> bool {
+        let head = unsafe { _read_data_head(&*self.header) };
+        let tail = unsafe { &*self.header }.data_tail;
+        (tail % self.size as u64) != (head % self.size as u64)
     }
 }
 
 impl Drop for RingBuffer {
     fn drop(&mut self) {
-        unsafe {
-            let _ = mman::munmap(self.header as *mut std::ffi::c_void, self.total_alloc_size);
-        }
+        // Consume all entries (Not sure if the kernel requires this... Probably not)
+        self.advance(None);
+        // Unmap buffer
+        let _ =
+            unsafe { mman::munmap(self.header as *mut std::ffi::c_void, self.size + *PAGE_SIZE) };
     }
 }
 
-/// All event records in a `RingBuffer`.
+unsafe impl Send for RingBuffer {}
+
+/// Iterator over records in a `RingBuffer`.
 ///
 /// `'m` corresponds to the lifetime of the containing `RingBuffer`.
+///
+/// # Memory layout
+/// ```text
+///      +--header+----+
+///      |             |
+///      +--base+------+
+///      |             |
+/// next |             |
+///     +------>       |
+///      |             |
+/// end  |             |
+///     +------>       |
+///      |             |
+///      +--limit+-----+
+/// ```
 #[derive(Debug)]
-pub struct RingBufferEvents<'m> {
-    /// Metadata of the corresponding ring buffer.
-    header: &'m mut ffi::perf_event_mmap_page,
-    /// Points to the head of the data section (unwrapped).
-    head: *mut u8,
-    /// Points to same location as `base` of containing `RingBuffer`.
+pub struct RingBufferIter<'m> {
+    /// Pointer to the start of the data section of the `RingBuffer`.
     base: *mut u8,
     /// Points to last item read from userspace (wrapped).
     next: *mut u8,
     /// Points to last item written (wrapped).
     end: *mut u8,
-    /// Points to last byte in the mmaped buffer.
+    /// Points to last byte of the data section of the `RingBuffer`.
     limit: *mut u8,
-    /// Points to `extra` of the containing `RingBuffer`.
-    extra: *mut u8,
-    marker: std::marker::PhantomData<&'m u32>,
+    /// Total bytes read by the iterator.
+    total_bytes_read: u64,
+    /// Extra memory to store an event that has been wrapped around the end of the `RingBuffer`.
+    extra: [u64; 32], // Need 256 bytes defined like this to use the derive Debug macro
+    /// Metadata of the corresponding ring buffer.
+    header: &'m mut ffi::perf_event_mmap_page,
 }
 
-impl<'m> RingBufferEvents<'m> {
-    /// Get the next `EventRecord`.
+impl<'m> RingBufferIter<'m> {
+    /// Create a new iterator for a `RingBuffer`.
+    pub(crate) fn new(buf: &'m mut RingBuffer) -> Self {
+        let header = unsafe { &mut *buf.header };
+        let data_head = unsafe { _read_data_head(header) };
+        let data_tail = header.data_tail as u64; // Does not need to read volatile as only this process will make writes
+        unsafe {
+            RingBufferIter {
+                header,
+                base: buf.base,
+                next: buf.base.add(data_tail as usize % buf.size),
+                end: buf.base.add(data_head as usize % buf.size),
+                limit: buf.base.add(buf.size),
+                total_bytes_read: 0,
+                extra: [0u64; 32],
+            }
+        }
+    }
+}
+
+impl<'m> Iterator for RingBufferIter<'m> {
+    type Item = &'m RawRecord;
+
     #[allow(clippy::cast_ptr_alignment)]
-    pub fn next_event(&mut self) -> Option<&'m RawEvent> {
+    fn next(&mut self) -> Option<Self::Item> {
         // Check if available
         if self.next == self.end {
             return None;
         }
 
         // Get new record
-        let mut evt = unsafe { &*(self.next as *const RawEvent) };
+        let mut evt = unsafe { &*(self.next as *const RawRecord) };
 
         // Update next
         let size = evt.header.size as isize;
         let next = unsafe { self.next.offset(size) };
+
+        // Check for wrap around
         let limit = self.limit;
         self.next = if next > limit {
             unsafe {
                 let len = limit.offset(-(self.next as isize)) as isize;
-                let (p0, l0) = (self.extra, len);
-                let (p1, l1) = (self.extra.offset(len), size - len);
+                let extra_ptr = self.extra.as_mut_ptr() as *mut u8;
+                let p0 = extra_ptr;
+                let l0 = len;
+                let p1 = extra_ptr.offset(len);
+                let l1 = size - len;
                 std::ptr::copy_nonoverlapping(self.next, p0, l0 as _);
                 std::ptr::copy_nonoverlapping(self.base, p1, l1 as _);
-                evt = &*(self.extra as *const RawEvent);
+                evt = &*(extra_ptr as *const RawRecord);
                 self.base.offset(l1)
             }
         } else if next == limit {
@@ -150,32 +241,250 @@ impl<'m> RingBufferEvents<'m> {
             next
         };
 
+        // Maintain total bytes read
+        self.total_bytes_read += evt.header.size as u64;
+
         Some(evt)
     }
 }
 
-impl<'m> Drop for RingBufferEvents<'m> {
-    fn drop(&mut self) {
-        self.header.data_tail = self.head as u64;
-    }
-}
+unsafe impl<'m> Send for RingBufferIter<'m> {}
 
-/// Individual event record. Can be of type specified in `ffi::perf_event_type`.
+/// Individual record in a `RingBuffer`.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct RawEvent {
-    /// Event header containing information about type of the event
+pub struct RawRecord {
+    /// Event header containing information about type of the event.
     pub header: ffi::perf_event_header,
-    /// First byte of the record.
+    /// First byte of the record after the header.
     pub data: [u8; 0],
 }
 
-impl RawEvent {
-    /// Get the raw data in an `EventRecord`.
-    ///
-    /// The memory layout of the raw data is given by `T`.
-    pub unsafe fn get_data<T>(&self) -> &T {
-        assert!(std::mem::size_of::<T>() <= self.header.size as usize);
-        &*(self.data.as_ptr() as *const T)
+impl RawRecord {
+    /// Check if this record is measurement sample.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    pub fn is_sample(&self) -> bool {
+        self.header.type_ == ffi::perf_event_type::PERF_RECORD_SAMPLE as u32
     }
+
+    /// Parse the raw data in this record to construct a `ParsedRingBufferRecord`.
+    ///
+    /// Only call this on the events of interest as this function will allocate new memory and
+    /// memcopy each event.
+    ///
+    /// # Note
+    /// The implementation of this function is closely tied to that of the `PerfEventBuilder` with
+    /// only configurations supported there being implemented here.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    pub fn parse(&self) -> Result<ParsedRecord> {
+        let raw_data = unsafe {
+            std::slice::from_raw_parts(
+                self.data.as_ptr(),
+                self.header.size as usize - std::mem::size_of::<ffi::perf_event_header>(),
+            )
+        };
+        debug!(
+            "Parsing RawRecord {:?} with data\n{}",
+            self.header,
+            crate::util::hexdump(raw_data)
+        );
+        let mut ptr = std::io::Cursor::new(raw_data);
+        let res = match self.header.type_.into() {
+            ffi::perf_event_type::PERF_RECORD_SWITCH => {
+                let is_out = (self.header.misc & ffi::PERF_RECORD_MISC_SWITCH_OUT as u16) != 0;
+                let is_preempt =
+                    (self.header.misc & ffi::PERF_RECORD_MISC_SWITCH_OUT_PREEMPT as u16) != 0;
+                ParsedRecord::ContextSwitch(if is_out {
+                    if is_preempt {
+                        ContextSwitchRecord::SwitchOutRunning
+                    } else {
+                        ContextSwitchRecord::SwitchOutIdle
+                    }
+                } else {
+                    ContextSwitchRecord::SwitchIn
+                })
+            }
+            ffi::perf_event_type::PERF_RECORD_EXIT => ParsedRecord::Exit(ProcessRecord {
+                pid: ptr.read_u32::<NativeEndian>()?,
+                ppid: ptr.read_u32::<NativeEndian>()?,
+                tid: ptr.read_u32::<NativeEndian>()?,
+                ptid: ptr.read_u32::<NativeEndian>()?,
+                time: ptr.read_u64::<NativeEndian>()?,
+            }),
+            ffi::perf_event_type::PERF_RECORD_FORK => ParsedRecord::Fork(ProcessRecord {
+                pid: ptr.read_u32::<NativeEndian>()?,
+                ppid: ptr.read_u32::<NativeEndian>()?,
+                tid: ptr.read_u32::<NativeEndian>()?,
+                ptid: ptr.read_u32::<NativeEndian>()?,
+                time: ptr.read_u64::<NativeEndian>()?,
+            }),
+            ffi::perf_event_type::PERF_RECORD_THROTTLE => ParsedRecord::Throttle(ThrottleRecord {
+                time: ptr.read_u64::<NativeEndian>()?,
+                id: ptr.read_u64::<NativeEndian>()?,
+                stream_id: ptr.read_u64::<NativeEndian>()?,
+            }),
+            ffi::perf_event_type::PERF_RECORD_UNTHROTTLE => {
+                ParsedRecord::UnThrottle(ThrottleRecord {
+                    time: ptr.read_u64::<NativeEndian>()?,
+                    id: ptr.read_u64::<NativeEndian>()?,
+                    stream_id: ptr.read_u64::<NativeEndian>()?,
+                })
+            }
+            ffi::perf_event_type::PERF_RECORD_LOST => ParsedRecord::Lost(LostRecord {
+                id: ptr.read_u64::<NativeEndian>()?,
+                num: ptr.read_u64::<NativeEndian>()?,
+            }),
+            ffi::perf_event_type::PERF_RECORD_COMM => ParsedRecord::Comm(CommRecord {
+                pid: ptr.read_u32::<NativeEndian>()?,
+                tid: ptr.read_u32::<NativeEndian>()?,
+                comm: {
+                    let raw_comm = &raw_data[ptr.position() as usize..];
+                    let filter_comm = &raw_comm[0..raw_comm
+                        .iter()
+                        .position(|&byte| byte == 0)
+                        .unwrap_or_else(|| raw_comm.len())];
+                    std::str::from_utf8(filter_comm)?.into()
+                },
+            }),
+            ffi::perf_event_type::PERF_RECORD_MMAP2 => ParsedRecord::Mmap2(Mmap2Record {
+                pid: ptr.read_u32::<NativeEndian>()?,
+                tid: ptr.read_u32::<NativeEndian>()?,
+                address: ptr.read_u64::<NativeEndian>()?,
+                length: ptr.read_u64::<NativeEndian>()?,
+                page_offset: ptr.read_u64::<NativeEndian>()?,
+                major: ptr.read_u32::<NativeEndian>()?,
+                minor: ptr.read_u32::<NativeEndian>()?,
+                inode: ptr.read_u64::<NativeEndian>()?,
+                inode_generation: ptr.read_u64::<NativeEndian>()?,
+                protection: ptr.read_u32::<NativeEndian>()?,
+                flags: ptr.read_u32::<NativeEndian>()?,
+                filename: {
+                    let raw_name = &raw_data[ptr.position() as usize..];
+                    let filtered_name = &raw_name[0..raw_name
+                        .iter()
+                        .position(|&byte| byte == 0)
+                        .unwrap_or_else(|| raw_name.len())];
+                    std::str::from_utf8(filtered_name)?.into()
+                },
+            }),
+            ffi::perf_event_type::PERF_RECORD_SAMPLE => ParsedRecord::Sample(SampleRecord {
+                ip: ptr.read_u64::<NativeEndian>()?,
+                pid: ptr.read_u32::<NativeEndian>()?,
+                tid: ptr.read_u32::<NativeEndian>()?,
+                time: ptr.read_u64::<NativeEndian>()?,
+                cpu: ptr.read_u32::<NativeEndian>()?,
+                period: {
+                    let _ = ptr.read_u32::<NativeEndian>()?; // Reserved field res
+                    ptr.read_u64::<NativeEndian>()?
+                },
+                value: PerfEventValue::from_cursor(&mut ptr)?,
+            }),
+            _ => ParsedRecord::UnknownEvent,
+        };
+        Ok(res)
+    }
+}
+
+/// Ring buffer records corresponding to context switches.
+#[derive(Debug)]
+pub enum ContextSwitchRecord {
+    /// Process switched in.
+    SwitchIn,
+    /// Process switched out when idle.
+    SwitchOutIdle,
+    /// Process switched out when running.
+    SwitchOutRunning,
+}
+
+/// Ring buffer records corresponding to process forks and exits.
+#[derive(Debug)]
+#[allow(missing_docs)]
+pub struct ProcessRecord {
+    pub pid: u32,
+    pub ppid: u32,
+    pub tid: u32,
+    pub ptid: u32,
+    pub time: u64,
+}
+
+/// Ring buffer records corresponding to throttle and unthrottle events.
+#[derive(Debug)]
+#[allow(missing_docs)]
+pub struct ThrottleRecord {
+    pub time: u64,
+    pub id: u64,
+    pub stream_id: u64,
+}
+
+/// Ring buffer records corresponding to lost samples.
+#[derive(Debug)]
+#[allow(missing_docs)]
+pub struct LostRecord {
+    pub id: u64,
+    pub num: u64,
+}
+
+/// Ring buffer records corresponding to changes in process names.
+#[derive(Debug)]
+#[allow(missing_docs)]
+pub struct CommRecord {
+    pub pid: u32,
+    pub tid: u32,
+    pub comm: String,
+}
+
+/// Ring buffer records with information about `mmap` calls.
+#[derive(Debug)]
+#[allow(missing_docs)]
+pub struct Mmap2Record {
+    pub pid: u32,
+    pub tid: u32,
+    pub address: u64,
+    pub length: u64,
+    pub page_offset: u64,
+    pub major: u32,
+    pub minor: u32,
+    pub inode: u64,
+    pub inode_generation: u64,
+    pub protection: u32,
+    pub flags: u32,
+    pub filename: String,
+}
+
+/// Ring buffer records corresponding to a sampled perf event.
+#[derive(Debug)]
+#[allow(missing_docs)]
+pub struct SampleRecord {
+    pub ip: u64,
+    pub pid: u32,
+    pub tid: u32,
+    pub time: u64,
+    pub cpu: u32,
+    pub period: u64,
+    pub value: crate::perf::PerfEventValue,
+}
+
+/// Ring buffer records with parsed fields.
+#[derive(Debug)]
+pub enum ParsedRecord {
+    /// Record corresponding to `PERF_RECORD_SWITCH`.
+    ContextSwitch(ContextSwitchRecord),
+    /// Record corresponding to `PERF_RECORD_EXIT`.
+    Exit(ProcessRecord),
+    /// Record corresponding to `PERF_RECORD_FORK`.
+    Fork(ProcessRecord),
+    /// Record corresponding to `PERF_RECORD_THROTTLE`.
+    Throttle(ThrottleRecord),
+    /// Record corresponding to `PERF_RECORD_UNTHROTTLE`.
+    UnThrottle(ThrottleRecord),
+    /// Record corresponding to `PERF_RECORD_LOST`.
+    Lost(LostRecord),
+    /// Record corresponding to `PERF_RECORD_COMM`.
+    Comm(CommRecord),
+    /// Record corresponding to `PERF_RECORD_MMAP2`.
+    Mmap2(Mmap2Record),
+    /// Record corresponding to `PERF_RECORD_SAMPLE`.
+    Sample(SampleRecord),
+    /// Record corresponding to all unimplemented `PERF_RECORD_*` types.
+    UnknownEvent,
 }

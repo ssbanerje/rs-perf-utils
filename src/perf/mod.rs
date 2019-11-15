@@ -6,7 +6,11 @@ mod version;
 pub use version::PerfVersion;
 
 mod event;
-pub use event::{HardwareReadable, OsReadable, PerfEvent, PerfEventBuilder};
+pub use event::{HardwareReadable, OsReadable, PerfEvent, PerfEventBuilder, PerfEventValue};
 
 mod mmap;
-pub use mmap::{RawEvent, RingBuffer, RingBufferEvents};
+pub(crate) use mmap::PAGE_SIZE;
+pub use mmap::{
+    CommRecord, ContextSwitchRecord, LostRecord, Mmap2Record, ParsedRecord, ProcessRecord,
+    RawRecord, RingBuffer, RingBufferIter, SampleRecord, ThrottleRecord,
+};

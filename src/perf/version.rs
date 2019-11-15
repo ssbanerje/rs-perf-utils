@@ -6,9 +6,9 @@ use std::process::Command;
 /// Details of the userspace `perf` tool version.
 pub struct PerfVersion {
     /// Major version.
-    major: i32,
+    pub major: i32,
     /// Minor version.
-    minor: i32,
+    pub minor: i32,
 }
 
 impl PerfVersion {
@@ -32,16 +32,6 @@ impl PerfVersion {
         };
 
         Ok(PerfVersion { major, minor })
-    }
-
-    /// Get major version.
-    pub fn major(&self) -> i32 {
-        self.major
-    }
-
-    /// Get minor version.
-    pub fn minor(&self) -> i32 {
-        self.minor
     }
 
     /// Allows for direct access.

@@ -31,7 +31,11 @@ find download.01.org -name "index.html*" -delete
 Alternatively the [Linux kernel source](https://github.com/torvalds/linux/tree/master/tools/perf/pmu-events/arch) hosts similar metadata for several ISAs.
 
 ## Examples / Tools
-To dump event strings for the perf command line tool from the JSON metadata.
-```
-cargo run --example dump_perf_strings <perfmon folder>
-```
+- To dump event strings for the perf command line tool from the JSON metadata.
+    ```
+    cargo run --example dump_perf_strings <perfmon folder>
+    ```
+- To dump measurements from the sampled counters
+    ```
+    cargo run --example read_samples <perfmon folder>
+    ```

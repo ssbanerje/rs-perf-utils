@@ -22,3 +22,6 @@ pub mod arch;
 
 mod pci;
 pub use pci::PciHandle;
+
+#[allow(dead_code)]
+pub(crate) mod util;

@@ -136,6 +136,7 @@ mod tests {
         assert!(pmu.is_ok());
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn test_pmu_query() {
         let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();

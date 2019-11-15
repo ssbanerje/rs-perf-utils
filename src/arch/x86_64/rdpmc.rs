@@ -82,7 +82,7 @@ mod tests {
             .unwrap();
         let evt = PerfEvent::build()
             .start_disabled()
-            .use_ring_buffer()
+            .enable_sampling()
             .open(Some(attr))?;
 
         // Count

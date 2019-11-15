@@ -1,17 +1,16 @@
 use log::info;
 use perf_utils::perf::PerfVersion;
 use perf_utils::pmu::Pmu;
-use std::env::*;
 
 fn main() -> perf_utils::Result<()> {
     env_logger::init();
 
-    // Get path to PMU events
-    let prg_args = args().skip(1).next();
+    // Get path to event metadata
+    let prg_args = std::env::args().skip(1).next();
     let pmu_events_path = if let Some(a) = prg_args {
         a
     } else {
-        std::env::var("PMU_EVENTS").unwrap()
+        std::env::var("PMU_EVENTS")?
     };
 
     // Parse metadata
