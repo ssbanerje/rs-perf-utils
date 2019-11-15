@@ -10,3 +10,4 @@ pub use cpuid::*;
 //pub use pci::*;
 
 mod rdpmc;
+pub use rdpmc::read_counter_rdpmc;

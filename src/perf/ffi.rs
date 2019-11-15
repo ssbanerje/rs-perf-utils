@@ -30,6 +30,30 @@ ioctl_write_int!(perf_event_ioc_pause_output, b'$', 9);
 ioctl_readwrite!(perf_event_ioc_query_bpf, b'$', 10, perf_event_query_bpf);
 ioctl_write_ptr!(perf_event_ioc_modify_attributes, b'$', 11, perf_event_attr);
 
+/// Rust wrapper for the `perf_event_open` system call.
+pub fn perf_event_open(
+    attr: &perf_event_attr,
+    pid: libc::pid_t,
+    cpu: libc::c_int,
+    group_fd: libc::c_int,
+    flags: libc::c_ulong,
+) -> Result<libc::c_int> {
+    unsafe {
+        let fd = libc::syscall(
+            libc::SYS_perf_event_open,
+            attr as *const _,
+            pid,
+            cpu,
+            group_fd,
+            flags,
+        );
+        match fd {
+            -1 => Err(Error::from_errno()),
+            rc => Ok(rc as libc::c_int),
+        }
+    }
+}
+
 // Extend perf_event_attr
 impl perf_event_attr {
     /// Get the PMU string from the `type_` field of a `perf_event_attr`.
@@ -100,6 +124,8 @@ impl perf_event_attr {
     }
 
     /// Generate an event string to be used with the `perf` command line tools.
+    ///
+    /// This string will not match those generated from `PmuEvent`.
     pub fn to_perf_string(&self) -> Result<String> {
         let pmu = self._get_pmu()?;
         let cfg1 = unsafe {

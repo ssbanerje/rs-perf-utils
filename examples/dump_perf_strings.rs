@@ -1,6 +1,6 @@
 use log::info;
 use perf_utils::perf::PerfVersion;
-use perf_utils::Pmu;
+use perf_utils::pmu::Pmu;
 use std::env::*;
 
 fn main() -> perf_utils::Result<()> {

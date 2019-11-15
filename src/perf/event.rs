@@ -6,30 +6,6 @@ use log::info;
 use nix::libc;
 use std::convert::TryInto;
 
-/// Rust wrapper for the `perf_event_open` system call.
-pub fn perf_event_open(
-    attr: &ffi::perf_event_attr,
-    pid: libc::pid_t,
-    cpu: libc::c_int,
-    group_fd: libc::c_int,
-    flags: libc::c_ulong,
-) -> Result<libc::c_int> {
-    unsafe {
-        let fd = libc::syscall(
-            libc::SYS_perf_event_open,
-            attr as *const _,
-            pid,
-            cpu,
-            group_fd,
-            flags,
-        );
-        match fd {
-            -1 => Err(Error::from_errno()),
-            rc => Ok(rc as libc::c_int),
-        }
-    }
-}
-
 /// A schedulable and readable performance counter.
 ///
 /// Represents a readable perf event which can be used to collect data directly from the kernel,
@@ -82,6 +58,25 @@ impl PerfEvent {
         Ok(())
     }
 
+    /// Poll event for new samples.
+    pub fn poll(&self, timeout: libc::c_int) -> Result<nix::poll::PollFlags> {
+        let mut pollfd = [nix::poll::PollFd::new(
+            self.fd,
+            nix::poll::PollFlags::POLLIN | nix::poll::PollFlags::POLLHUP,
+        )];
+        nix::poll::poll(&mut pollfd, timeout)?;
+        match pollfd[0].revents() {
+            Some(x) => Ok(x),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Check if target process of this event has exited.
+    pub fn is_closed(&self) -> Result<bool> {
+        let poll = self.poll(0)?;
+        Ok(poll.intersects(nix::poll::PollFlags::POLLHUP))
+    }
+
     /// Write modifications to `self.attr` to the kernel.
     pub fn modify_event_attributes(&mut self) -> Result<()> {
         unsafe {
@@ -93,16 +88,25 @@ impl PerfEvent {
         Ok(())
     }
 
-
+    /// Modify the frequency or period at which this event is sampled.
+    ///
+    /// By default the event is frequency based. To switch to period modify the event's `attr` field
+    /// and write the modifications to the kernel using `modify_event_attributes`.
+    pub fn modify_frequency_period(&mut self, freq: u64) -> Result<()> {
+        unsafe {
+            ffi::perf_event_ioc_period(self.fd, freq)?;
+        }
+        Ok(())
+    }
 }
 
-/// Trait allowing for performance counter data to be directly open file descriptor.
-pub trait DirectReadable {
+/// Trait allowing for performance counter data to be directly through the Kernel.
+pub trait OsReadable {
     /// Read value of performance counter from it's file descriptor.
     fn read_fd(&self) -> Result<u64>;
 }
 
-impl DirectReadable for PerfEvent {
+impl OsReadable for PerfEvent {
     fn read_fd(&self) -> Result<u64> {
         if self.ring_buffer.is_none() {
             let mut bytes = [0u8; 8];
@@ -271,10 +275,8 @@ impl PerfEventBuilder {
         }
     }
 
-    /// Generate the `PerfEvent` from this builder.
-    ///
-    /// If a `base_event_attr` is provided, all fields set in the builder will be overwritten.
-    pub fn open(self, base_event_attr: Option<ffi::perf_event_attr>) -> Result<PerfEvent> {
+    /// Internal implementation of open so as to not consume self.
+    fn _open(&self, base_event_attr: Option<ffi::perf_event_attr>) -> Result<PerfEvent> {
         info!("Opening perf event {:?}", &self);
 
         // Check validity
@@ -291,7 +293,7 @@ impl PerfEventBuilder {
         self._set_attr_config(&mut attr);
 
         // Open file corresponding to perf_event_attr
-        let fd = perf_event_open(
+        let fd = ffi::perf_event_open(
             &attr,
             self.pid,
             self.cpuid,
@@ -301,16 +303,15 @@ impl PerfEventBuilder {
 
         // Get ringbuffer corresponding to the fd
         let ring_buffer = if self.is_sampled {
-            let page_size = 4096;
-            let req_space = if self.stack_size > 4096 {
-                self.stack_size
-            } else {
-                4096
-            };
-            let n = (1u32..26)
+            let page_size: u32 = nix::unistd::sysconf(nix::unistd::SysconfVar::PAGE_SIZE)?
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let req_space = std::cmp::max(page_size, self.stack_size);
+            let log_num_pages = (1u32..26)
                 .find(|x| (1 << *x) * page_size >= req_space)
                 .unwrap();
-            let page_count = if (1 << n) > 16 { 1 << n } else { 16 };
+            let page_count = std::cmp::max(1 << log_num_pages, 16);
             Some(crate::perf::RingBuffer::new(fd, page_count as _)?)
         } else {
             None
@@ -322,6 +323,32 @@ impl PerfEventBuilder {
             fd,
             ring_buffer,
         })
+    }
+
+    /// Generate the `PerfEvent` from this builder.
+    ///
+    /// If a `base_event_attr` is provided, all fields set in the builder will be overwritten.
+    pub fn open(&self, base_event_attr: Option<ffi::perf_event_attr>) -> Result<PerfEvent> {
+        self._open(base_event_attr)
+    }
+
+    /// Generate a group of perf events from this builder.
+    ///
+    /// The first element of `base_event_attrs` is assumed to be the group leader.
+    pub fn open_group(
+        mut self,
+        mut base_event_attrs: Vec<ffi::perf_event_attr>,
+    ) -> Result<Vec<PerfEvent>> {
+        // Create leader first
+        let leader = self._open(Some(base_event_attrs.pop().unwrap()))?;
+        // Create group using leader's fd
+        self.leader = leader.fd;
+        let mut out = Vec::with_capacity(base_event_attrs.len() + 1);
+        out.push(leader);
+        for attr in base_event_attrs.iter_mut() {
+            out.push(self._open(Some(*attr))?);
+        }
+        Ok(out)
     }
 
     builder_pattern!(
@@ -398,9 +425,8 @@ mod tests {
         assert!(paranoid <= 2);
         let mut attr = ffi::perf_event_attr::default();
         attr.type_ = ffi::perf_type_id::PERF_TYPE_SOFTWARE as _;
-        attr.set_exclude_hv(1);
         attr.config = ffi::perf_sw_ids::PERF_COUNT_SW_TASK_CLOCK as _;
-        let evt = PerfEvent::build().start_disabled().open(None);
+        let evt = PerfEvent::build().start_disabled().open(Some(attr));
         assert!(evt.is_ok());
         let evt = evt.unwrap();
 

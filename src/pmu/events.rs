@@ -374,7 +374,7 @@ impl PartialEq for PmuEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Pmu;
+    use crate::pmu::Pmu;
     use std::process::{Command, Stdio};
 
     #[test]

@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn test_pmu_query() {
         let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
-        let pmu = crate::Pmu::from_local_cpu(pmu_events_path).unwrap();
+        let pmu = Pmu::from_local_cpu(pmu_events_path).unwrap();
         let evt_name = r"INST_RETIRED.ANY";
         let event = pmu.find_pmu_by_name(&evt_name);
         assert!(event.is_ok());
