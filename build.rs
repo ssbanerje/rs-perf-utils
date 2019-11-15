@@ -4,6 +4,7 @@ fn generate_kernel_bindings() {
     let bindings = bindgen::Builder::default()
         .header(kernel_header_wrapper)
         .derive_debug(true)
+        .impl_debug(true)
         .derive_default(true)
         .rustified_enum("*")
         .generate()

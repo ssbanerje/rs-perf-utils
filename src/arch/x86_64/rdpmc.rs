@@ -1,8 +1,7 @@
 //! Utilities specific to the x86_64 architecture.
 
 use crate::perf::*;
-use crate::Result;
-use nix::libc;
+use crate::{Error, Result};
 
 extern "C" {
     fn rdpmc(counter: u32) -> u64;
@@ -17,130 +16,70 @@ unsafe fn rdpmc(counter: i32) -> i64 {
 }
 */
 
-/// Allows accessing CPU performance counters from ring 3 using the `perf_events` subsystem.
-#[derive(Debug)]
-pub struct Rdpmc {
-    /// File descriptor to performance counter.
-    fd: libc::c_int,
-    /// Memory mapped structure storing the performance counter.
-    buf: *mut ffi::perf_event_mmap_page,
-}
-
-impl Rdpmc {
-    /// Initialize the performance counter using its a `perf_event_attr`.
-    ///
-    /// This does not check if the input `attr` corresponds to a CPU event that can be read through
-    /// the `rdpmc` instruction.
-    pub fn open(
-        attr: &ffi::perf_event_attr,
-        leader: Option<libc::c_int>,
-        pid: libc::pid_t,
-        cpuid: libc::c_int,
-    ) -> Result<Rdpmc> {
-        let mut new_ctr = Rdpmc {
-            fd: perf_event_open(
-                attr,
-                pid,
-                cpuid,
-                match leader {
-                    Some(x) => x,
-                    None => -1,
-                },
-                0,
-            )?,
-            buf: std::ptr::null_mut(),
+impl HardwareReadable for PerfEvent {
+    fn read_hw(&self) -> Result<u64> {
+        // Check capability
+        if self.ring_buffer.is_none() {
+            return Err(Error::WrongReadMethod);
+        }
+        let buf = if let Some(ref rb) = self.ring_buffer {
+            rb.header
+        } else {
+            unreachable!()
         };
         unsafe {
-            new_ctr.buf = libc::mmap(
-                std::ptr::null_mut(),
-                libc::sysconf(libc::_SC_PAGESIZE) as usize,
-                libc::PROT_READ,
-                libc::MAP_SHARED,
-                new_ctr.fd,
-                0,
-            ) as *mut ffi::perf_event_mmap_page;
+            if (*buf).__bindgen_anon_1.__bindgen_anon_1.cap_user_rdpmc() == 0 {
+                return Err(Error::PerfNotCapable);
+            }
         }
-        if new_ctr.buf != libc::MAP_FAILED as _ {
-            Ok(new_ctr)
-        } else {
-            Err(crate::Error::from_errno())
-        }
-    }
-
-    /// Read the performance counter.
-    pub fn read(&mut self) -> u64 {
+        // Read counter
         let mut val: u64;
         let mut offset: i64;
         let mut seq: u32;
         let mut idx: u32;
         loop {
-            unsafe {
-                seq = (*(self.buf)).lock;
-                std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
-
-                idx = (*(self.buf)).index;
-                offset = (*(self.buf)).offset;
-                if idx == 0 {
-                    val = 0;
-                    break;
-                }
-                val = rdpmc(idx - 1);
-                std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
-
-                if seq != (*(self.buf)).lock {
-                    break;
-                }
+            let pc: &ffi::perf_event_mmap_page = unsafe { &*buf };
+            seq = pc.lock;
+            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+            idx = pc.index;
+            offset = pc.offset;
+            if idx == 0 {
+                val = 0;
+                break;
+            }
+            val = unsafe { rdpmc(idx - 1) };
+            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+            if seq != pc.lock {
+                break;
             }
         }
-        (val + (offset as u64)) & 0xffff_ffff_ffff
-    }
-}
-
-impl Drop for Rdpmc {
-    fn drop(&mut self) {
-        unsafe {
-            libc::munmap(
-                self.buf as *mut libc::c_void,
-                libc::sysconf(libc::_SC_PAGESIZE) as usize,
-            );
-            libc::close(self.fd);
-        }
+        Ok((val + (offset as u64)) & 0xffff_ffff_ffff)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use log::info;
 
     #[test]
-    fn test_rdpmc() {
-        let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
-        let pmu = crate::Pmu::from_local_cpu(pmu_events_path).unwrap();
-        let event = pmu
-            .find_pmu_by_name(r"INST_RETIRED.ANY")
-            .unwrap()
-            .pop()
-            .unwrap();
-        let mut attr = event.to_perf_event_attr(Some(&pmu.events)).pop().unwrap();
-        attr.sample_type = crate::perf::ffi::perf_event_sample_format::PERF_SAMPLE_READ as _;
-        attr.set_exclude_kernel(1);
-        attr.set_exclude_hv(1);
+    fn test_rdpmc_read() -> crate::Result<()> {
+        // Get perf_event_attr
+        let pmu_events_path = std::env::var("PMU_EVENTS")?;
+        let pmu = crate::Pmu::from_local_cpu(pmu_events_path)?;
+        let attr = pmu.find_pmu_by_name(r"INST_RETIRED.ANY")?.pop().unwrap()
+            .to_perf_event_attr(Some(&pmu.events)).pop().unwrap();
+        let evt = PerfEvent::build()
+            .start_disabled()
+            .use_ring_buffer()
+            .open(Some(attr))?;
 
-        let counter = Rdpmc::open(&attr, None, 0, -1);
-        assert!(counter.is_ok());
-        let mut counter = counter.unwrap();
-
-        let mut prev = counter.read();
-        let thresh = 1000;
-        loop {
-            let next = counter.read();
-            if next - prev > thresh {
-                info!("{}, {}", next, prev);
-                break;
-            }
-            prev = next;
-            std::thread::sleep(std::time::Duration::from_secs(1));
+        // Count
+        evt.enable()?;
+        for i in 1..10 {
+            println!("{}", i);
         }
+        let count = evt.read_hw();
+        assert!(count.is_ok());
+        Ok(())
     }
 }

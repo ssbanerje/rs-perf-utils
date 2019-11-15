@@ -1,8 +1,7 @@
 use crate::perf::ffi::{perf_event_attr, perf_type_id};
 use crate::perf::PerfVersion;
-use crate::{MetricExpr, Result};
+use crate::{pmu::MetricExpr, Result};
 use log::warn;
-use std::convert::TryInto;
 
 /// Raw event format represented in the JSON event files.
 pub type RawEvent = std::collections::HashMap<String, String>;
@@ -317,7 +316,6 @@ impl PmuEvent {
         // TODO Unsure if this works on a PowerPC machine
         if !self.is_metric {
             let mut attr = perf_event_attr::default();
-            attr.size = std::mem::size_of_val(&attr).try_into().unwrap();
             attr.type_ = perf_type_id::PERF_TYPE_RAW as _;
             if let Some(e) = self.event_code {
                 attr.config |= e & 0xFF;

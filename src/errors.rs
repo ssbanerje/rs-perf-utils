@@ -26,6 +26,9 @@ pub enum Error {
     /// Errors originating from calls to `libc` or other system utilties.
     #[fail(display = "System Error - {}", _0)]
     System(#[cause] nix::Error),
+    /// Errors caused by capability checks on the kernel.
+    #[fail(display = "Not allowed by kernel")]
+    PerfNotCapable,
     /// Errors in parsing PMU event JSON files.
     ///
     /// This can be because of a malformed JSON file or because parsing of some JSON formats is
@@ -35,6 +38,9 @@ pub enum Error {
     /// Errors in finding PMU under current system configuration.
     #[fail(display = "Could not find PMU")]
     PmuNotFound,
+    /// Caused when a perf event is not read by the correct method.
+    #[fail(display = "This perf counter cannot be read using this method")]
+    WrongReadMethod,
 }
 
 impl Error {

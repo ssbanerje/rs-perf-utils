@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use crate::Result;
 use lazy_static::lazy_static;
 use pest::iterators::{Pair, Pairs};
@@ -8,7 +10,7 @@ use pest_derive::*;
 /// Helper struct to parse metric event expressions.
 #[derive(Parser)]
 #[grammar = "pmu/metric_parser.pest"]
-pub struct MetricExprParser;
+struct MetricExprParser;
 
 lazy_static! {
     /// `PrecClimber` used internally to parse an matric event's expression.

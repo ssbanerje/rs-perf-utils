@@ -1,4 +1,4 @@
-FROM ubuntu:latest
+FROM ubuntu:rolling
 MAINTAINER Subho S Banerjee <ssbaner2@illinois.edu>
 
 # Setup dependencies

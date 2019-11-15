@@ -6,12 +6,10 @@ mod errors;
 pub use errors::{Error, Result};
 
 pub mod perf;
+pub use perf::{ffi, PerfVersion, PerfEventBuilder, PerfEvent, HardwareReadable, DirectReadable, RingBuffer, RingBufferEvents, RawEvent};
 
-mod pmu;
-pub use pmu::{MetricExpr, Pmu, PmuEvent, RawEvent};
-
-mod performance_counters;
-pub use performance_counters::{EventRecord, Events, MmappedRingBuffer};
+pub mod pmu;
+pub use pmu::{Pmu, PmuEvent, MetricExpr};
 
 /// Architecture specific implementation details of performance counters:
 #[cfg(target_arch = "x86_64")]
