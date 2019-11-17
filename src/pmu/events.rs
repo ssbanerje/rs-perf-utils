@@ -143,13 +143,16 @@ impl PmuEvent {
             // This is derived event
             evt.is_metric = true;
             evt.name = n.clone();
-            evt.metric_group = Some(raw_event.get("MetricGroup").unwrap().clone());
             let expr = raw_event.get("MetricExpr").unwrap().clone();
+            if let Some(mg) = raw_event.get("MetricGroup") {
+                evt.metric_group = Some(mg.clone());
+            }
             evt.parsed_metric_expr = Some(MetricExpr::parse_str(expr.as_str())?);
             evt.metric_expr = Some(expr);
         } else {
             return Err(crate::Error::ParsePmu);
         }
+
         evt.topic = raw_event.get("Topic").expect("Topic").clone();
         if let Some(d) = raw_event.get("BriefDescription") {
             evt.desc = d.clone();
@@ -164,9 +167,10 @@ impl PmuEvent {
 
     /// Perf strings for core events.
     fn _get_core_event_string(&self, is_direct: bool, put_name: bool) -> String {
-        assert!(self.umask.is_some() && self.event_code.is_some());
+        assert!(self.event_code.is_some());
         if is_direct {
             if cfg!(target_arch = "x86_64") {
+                assert!(self.umask.is_some());
                 format!(
                     "r{:X}{:X}",
                     self.umask.unwrap() & 0xFF,
@@ -176,6 +180,11 @@ impl PmuEvent {
                 format!("r{:X}", self.event_code.unwrap())
             }
         } else {
+            let umask = if let Some(u) = self.umask {
+                format!(",umask={:#X}", u)
+            } else {
+                String::default()
+            };
             let cmask = if let Some(c) = self.cmask {
                 format!(",cmask={:#X}", c)
             } else {
@@ -203,9 +212,9 @@ impl PmuEvent {
                 String::default()
             };
             format!(
-                "cpu/event={:#X},umask={:#X}{}{}{}{}/",
+                "cpu/event={:#X}{}{}{}{}{}/",
                 self.event_code.unwrap(),
-                self.umask.unwrap(),
+                umask,
                 cmask,
                 edge,
                 inv,
@@ -375,6 +384,7 @@ impl PartialEq for PmuEvent {
 mod tests {
     use super::*;
     use crate::pmu::Pmu;
+    use rayon::prelude::*;
     use std::process::{Command, Stdio};
 
     #[test]
@@ -387,15 +397,18 @@ mod tests {
             .iter()
             .map(|x| x.to_perf_string(&pv, Some(&pmu.events)))
             .collect();
-        for evt in perf_strings.iter() {
-            let stat = Command::new("perf")
-                .args(&["stat", "-e", evt.as_str(), "--", "ls"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .unwrap();
-            assert!(stat.success())
-        }
+        let res = perf_strings[0..100] // Otherwise this takes too long
+            .par_iter()
+            .all(|evt| {
+                let stat = Command::new("perf")
+                    .args(&["stat", "-e", evt.as_str(), "--", "/bin/true"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .unwrap();
+                stat.success()
+            });
+        assert!(res);
     }
 
     #[test]

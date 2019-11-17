@@ -10,7 +10,7 @@ non_snake_case
 
 use crate::{Error, Result};
 use nix::libc;
-use nix::{ioctl_none, ioctl_readwrite, ioctl_write_int, ioctl_write_ptr};
+use nix::{ioctl_none, ioctl_write_int, ioctl_write_ptr};
 
 // Read Bindgen wrappers
 include!(concat!(env!("OUT_DIR"), "/kernel_headers.rs"));
@@ -27,7 +27,6 @@ ioctl_write_ptr!(perf_event_ioc_set_filter, b'$', 6, libc::c_char);
 ioctl_write_ptr!(perf_event_ioc_id, b'$', 7, libc::c_ulong);
 ioctl_write_int!(perf_event_ioc_set_bpf, b'$', 8);
 ioctl_write_int!(perf_event_ioc_pause_output, b'$', 9);
-ioctl_readwrite!(perf_event_ioc_query_bpf, b'$', 10, perf_event_query_bpf);
 ioctl_write_ptr!(perf_event_ioc_modify_attributes, b'$', 11, perf_event_attr);
 
 /// Rust wrapper for the `perf_event_open` system call.
@@ -155,8 +154,11 @@ impl perf_event_attr {
 
 // Extend perf_event_type
 impl From<u32> for perf_event_type {
-    fn from(val: u32) -> perf_event_type {
-        unsafe { std::mem::transmute(val) }
+    fn from(val: u32) -> Self {
+        if val <= Self::PERF_RECORD_MAX as u32 {
+            return unsafe { std::mem::transmute(val) };
+        }
+        panic!("Trying to parse an invalid perf_event_type");
     }
 }
 

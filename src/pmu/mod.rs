@@ -1,6 +1,7 @@
 //! Utilities to read and process PMU events.
 
 use crate::perf::PerfVersion;
+use log::error;
 use regex::Regex;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -47,7 +48,7 @@ impl Pmu {
         let mapped_files = BufReader::new(mapfile)
             .lines()
             .filter_map(std::result::Result::ok)
-            .filter(|l| !l.starts_with('#') && !l.starts_with('\n'))
+            .filter(|l| !l.starts_with('#') && !l.starts_with('\n') && !l.is_empty())
             .filter_map(|l| {
                 let splits: Vec<&str> = l.split(',').collect();
                 if Regex::new(splits[0]).unwrap().is_match(&cpu) {
@@ -80,7 +81,13 @@ impl Pmu {
             .iter()
             .flat_map(|f| {
                 let s = std::fs::read_to_string(f).unwrap();
-                let mut j: Vec<HashMap<String, String>> = serde_json::from_str(s.as_str()).unwrap();
+                let mut j: Vec<HashMap<String, String>> = match serde_json::from_str(s.as_str()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!("Could not parse JSON file -- {:?}", e);
+                        vec![]
+                    }
+                };
                 j.iter_mut().for_each(|x| {
                     // Add the file name as a topic
                     let fname = std::path::Path::new(&f)

@@ -23,6 +23,7 @@ bindgen = "0.51"
 
 [dev-dependencies]
 env_logger = "0.7"
+rayon = "1.2"
 
 [profile.release]
 lto = true

@@ -6,7 +6,10 @@ fn generate_kernel_bindings() {
         .derive_debug(true)
         .impl_debug(true)
         .derive_default(true)
-        .rustified_enum("*")
+        .rustified_enum(r".*")
+        .whitelist_type(r"^perf_.*")
+        .whitelist_var(r"^PERF_.*")
+        .blacklist_type(r"^__kernel.*")
         .generate()
         .expect("Unable to generate bindings");
     let out_path = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -15,8 +18,20 @@ fn generate_kernel_bindings() {
         .expect("Couldn't write bindings!");
 }
 
+#[cfg(target_arch = "x86_64")]
 fn compile_asm_helpers() {
-    let asm_helpers = "src/arch/asm_helpers.c";
+    let asm_helpers = "src/arch/x86_64/asm_helpers.c";
+    println!("cargo:rerun-if-changed={}", asm_helpers);
+    cc::Build::new()
+        .file(asm_helpers)
+        .flag("-O3")
+        .warnings_into_errors(true)
+        .compile("asm_helper");
+}
+
+#[cfg(target_arch = "powerpc64")]
+fn compile_asm_helpers() {
+    let asm_helpers = "src/arch/powerpc64/asm_helpers.c";
     println!("cargo:rerun-if-changed={}", asm_helpers);
     cc::Build::new()
         .file(asm_helpers)
