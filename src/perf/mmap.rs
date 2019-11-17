@@ -109,10 +109,10 @@ impl RingBuffer {
         let mut iter = self.events();
         let bytes_read = if let Some(n) = num {
             let _ = iter.nth(n);
-            iter.total_bytes_read
+            iter.bytes_read
         } else {
             let _ = iter.try_fold(0, |_, _| Some(0)); // goto last entry
-            iter.total_bytes_read
+            iter.bytes_read
         };
         self.total_bytes_read += bytes_read;
 
@@ -153,9 +153,7 @@ unsafe impl Send for RingBuffer {}
 ///
 /// # Memory layout
 /// ```text
-///      +--header+----+
-///      |             |
-///      +--base+------+
+///      +--data+------+
 ///      |             |
 /// next |             |
 ///     +------>       |
@@ -163,24 +161,19 @@ unsafe impl Send for RingBuffer {}
 /// end  |             |
 ///     +------>       |
 ///      |             |
-///      +--limit+-----+
+///      +-------------+
 /// ```
-#[derive(Debug)]
 pub struct RingBufferIter<'m> {
     /// Pointer to the start of the data section of the `RingBuffer`.
-    base: *mut u8,
-    /// Points to last item read from userspace (wrapped).
-    next: *mut u8,
-    /// Points to last item written (wrapped).
-    end: *mut u8,
-    /// Points to last byte of the data section of the `RingBuffer`.
-    limit: *mut u8,
+    data: &'m mut [u8],
+    /// Byte index of the last item read from userspace (wrapped).
+    next_idx: u64,
+    /// Byte index of the last item read from kernel (wrapped).
+    end_idx: u64,
     /// Total bytes read by the iterator.
-    total_bytes_read: u64,
+    bytes_read: u64,
     /// Extra memory to store an event that has been wrapped around the end of the `RingBuffer`.
-    extra: [u64; 32], // Need 256 bytes defined like this to use the derive Debug macro
-    /// Metadata of the corresponding ring buffer.
-    header: &'m mut ffi::perf_event_mmap_page,
+    extra: [u8; 256],
 }
 
 impl<'m> RingBufferIter<'m> {
@@ -189,66 +182,92 @@ impl<'m> RingBufferIter<'m> {
         let header = unsafe { &mut *buf.header };
         let data_head = unsafe { _read_data_head(header) };
         let data_tail = header.data_tail as u64; // Does not need to read volatile as only this process will make writes
-        unsafe {
-            RingBufferIter {
-                header,
-                base: buf.base,
-                next: buf.base.add(data_tail as usize % buf.size),
-                end: buf.base.add(data_head as usize % buf.size),
-                limit: buf.base.add(buf.size),
-                total_bytes_read: 0,
-                extra: [0u64; 32],
-            }
+        RingBufferIter {
+            data: unsafe { std::slice::from_raw_parts_mut(buf.base, buf.size) },
+            next_idx: data_tail % buf.size as u64,
+            end_idx: data_head % buf.size as u64,
+            bytes_read: 0,
+            extra: [0u8; 256],
         }
+    }
+
+    /// Get the `RawRecord` at position `self.next`.
+    #[allow(clippy::cast_ptr_alignment)]
+    #[inline(always)]
+    unsafe fn _get_next_record(&self) -> &'m RawRecord {
+        let ptr = &self.data[self.next_idx as usize] as *const u8 as *const RawRecord;
+        &*ptr
+    }
+
+    /// Get the `RawRecord` stored in `self.extra`.
+    #[allow(clippy::cast_ptr_alignment)]
+    #[inline(always)]
+    unsafe fn _get_record_at_extra(&self) -> &'m RawRecord {
+        &*(&self.extra as *const u8 as *const RawRecord)
     }
 }
 
 impl<'m> Iterator for RingBufferIter<'m> {
     type Item = &'m RawRecord;
 
-    #[allow(clippy::cast_ptr_alignment)]
     fn next(&mut self) -> Option<Self::Item> {
         // Check if available
-        if self.next == self.end {
+        if self.next_idx == self.end_idx {
             return None;
         }
 
         // Get new record
-        let mut evt = unsafe { &*(self.next as *const RawRecord) };
+        let mut evt = unsafe { self._get_next_record() };
 
         // Update next
-        let size = evt.header.size as isize;
-        let next = unsafe { self.next.offset(size) };
+        let next = self.next_idx + evt.header.size as u64;
+        let limit = self.data.len() as u64;
+        self.next_idx = if next > limit {
+            // Copy data from end of data to extra
+            let num_at_end = limit - self.next_idx;
+            let src_range = (self.next_idx as usize)..(limit as usize);
+            let dst_range = 0..(num_at_end as usize);
+            self.extra[dst_range].copy_from_slice(&self.data[src_range]);
 
-        // Check for wrap around
-        let limit = self.limit;
-        self.next = if next > limit {
-            unsafe {
-                let len = limit.offset(-(self.next as isize)) as isize;
-                let extra_ptr = self.extra.as_mut_ptr() as *mut u8;
-                let p0 = extra_ptr;
-                let l0 = len;
-                let p1 = extra_ptr.offset(len);
-                let l1 = size - len;
-                std::ptr::copy_nonoverlapping(self.next, p0, l0 as _);
-                std::ptr::copy_nonoverlapping(self.base, p1, l1 as _);
-                evt = &*(extra_ptr as *const RawRecord);
-                self.base.offset(l1)
-            }
+            // Copy data from begining of data to extra
+            let num_at_beg = evt.header.size as u64 - num_at_end;
+            let src_range = 0..(num_at_beg as usize);
+            let dst_range = (num_at_end as usize)..((num_at_end + num_at_beg) as usize);
+            self.extra[dst_range].copy_from_slice(&self.data[src_range]);
+
+            // Set evt to point to the extra buffer
+            evt = unsafe { self._get_record_at_extra() };
+
+            // Done
+            num_at_beg
         } else if next == limit {
-            self.base
+            0
         } else {
             next
         };
 
         // Maintain total bytes read
-        self.total_bytes_read += evt.header.size as u64;
+        self.bytes_read += evt.header.size as u64;
 
         Some(evt)
     }
 }
 
-unsafe impl<'m> Send for RingBufferIter<'m> {}
+impl std::fmt::Debug for RingBufferIter<'_> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "RingBufferIter ")?;
+        fmt.debug_map()
+            .entry(&"next", &self.next_idx)
+            .entry(&"end", &self.end_idx)
+            .entry(&"bytes_read", &self.bytes_read)
+            .entry(&"data.ptr", &self.data.as_ptr())
+            .entry(&"data.len", &self.data.len())
+            .entry(&"extra.ptr", &self.extra.as_ptr())
+            .finish()
+    }
+}
+
+unsafe impl Send for RingBufferIter<'_> {}
 
 /// Individual record in a `RingBuffer`.
 #[repr(C)]
@@ -283,11 +302,13 @@ impl RawRecord {
                 self.header.size as usize - std::mem::size_of::<ffi::perf_event_header>(),
             )
         };
+
         debug!(
             "Parsing RawRecord {:?} with data\n{}",
             self.header,
             crate::util::hexdump(raw_data)
         );
+
         let mut ptr = std::io::Cursor::new(raw_data);
         let res = match self.header.type_.into() {
             ffi::perf_event_type::PERF_RECORD_SWITCH => {
@@ -304,6 +325,7 @@ impl RawRecord {
                     ContextSwitchRecord::SwitchIn
                 })
             }
+
             ffi::perf_event_type::PERF_RECORD_EXIT => ParsedRecord::Exit(ProcessRecord {
                 pid: ptr.read_u32::<NativeEndian>()?,
                 ppid: ptr.read_u32::<NativeEndian>()?,
@@ -311,6 +333,7 @@ impl RawRecord {
                 ptid: ptr.read_u32::<NativeEndian>()?,
                 time: ptr.read_u64::<NativeEndian>()?,
             }),
+
             ffi::perf_event_type::PERF_RECORD_FORK => ParsedRecord::Fork(ProcessRecord {
                 pid: ptr.read_u32::<NativeEndian>()?,
                 ppid: ptr.read_u32::<NativeEndian>()?,
@@ -318,11 +341,13 @@ impl RawRecord {
                 ptid: ptr.read_u32::<NativeEndian>()?,
                 time: ptr.read_u64::<NativeEndian>()?,
             }),
+
             ffi::perf_event_type::PERF_RECORD_THROTTLE => ParsedRecord::Throttle(ThrottleRecord {
                 time: ptr.read_u64::<NativeEndian>()?,
                 id: ptr.read_u64::<NativeEndian>()?,
                 stream_id: ptr.read_u64::<NativeEndian>()?,
             }),
+
             ffi::perf_event_type::PERF_RECORD_UNTHROTTLE => {
                 ParsedRecord::UnThrottle(ThrottleRecord {
                     time: ptr.read_u64::<NativeEndian>()?,
@@ -330,10 +355,12 @@ impl RawRecord {
                     stream_id: ptr.read_u64::<NativeEndian>()?,
                 })
             }
+
             ffi::perf_event_type::PERF_RECORD_LOST => ParsedRecord::Lost(LostRecord {
                 id: ptr.read_u64::<NativeEndian>()?,
                 num: ptr.read_u64::<NativeEndian>()?,
             }),
+
             ffi::perf_event_type::PERF_RECORD_COMM => ParsedRecord::Comm(CommRecord {
                 pid: ptr.read_u32::<NativeEndian>()?,
                 tid: ptr.read_u32::<NativeEndian>()?,
@@ -346,6 +373,7 @@ impl RawRecord {
                     std::str::from_utf8(filter_comm)?.into()
                 },
             }),
+
             ffi::perf_event_type::PERF_RECORD_MMAP2 => ParsedRecord::Mmap2(Mmap2Record {
                 pid: ptr.read_u32::<NativeEndian>()?,
                 tid: ptr.read_u32::<NativeEndian>()?,
@@ -367,6 +395,7 @@ impl RawRecord {
                     std::str::from_utf8(filtered_name)?.into()
                 },
             }),
+
             ffi::perf_event_type::PERF_RECORD_SAMPLE => ParsedRecord::Sample(SampleRecord {
                 ip: ptr.read_u64::<NativeEndian>()?,
                 pid: ptr.read_u32::<NativeEndian>()?,
@@ -379,6 +408,7 @@ impl RawRecord {
                 },
                 value: PerfEventValue::from_cursor(&mut ptr)?,
             }),
+
             _ => ParsedRecord::UnknownEvent,
         };
         Ok(res)

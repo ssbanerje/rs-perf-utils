@@ -5,6 +5,7 @@ use crate::perf::PAGE_SIZE;
 use crate::{Error, Result};
 use byteorder::NativeEndian;
 use byteorder::ReadBytesExt;
+use log::debug;
 use nix::libc;
 use std::convert::TryInto;
 use std::os::unix::io::{AsRawFd, FromRawFd};
@@ -34,6 +35,7 @@ impl PerfEvent {
         unsafe {
             ffi::perf_event_ioc_enable(self.file.as_raw_fd())?;
         }
+        debug!("PerfEvent enabled: {:?}", self.attr);
         Ok(())
     }
 
@@ -42,6 +44,7 @@ impl PerfEvent {
         unsafe {
             ffi::perf_event_ioc_disable(self.file.as_raw_fd())?;
         }
+        debug!("PerfEvent disabled: {:?}", self.attr);
         Ok(())
     }
 
@@ -50,6 +53,7 @@ impl PerfEvent {
         unsafe {
             ffi::perf_event_ioc_reset(self.file.as_raw_fd())?;
         }
+        debug!("PerfEvent reset: {:?}", self.attr);
         Ok(())
     }
 
@@ -80,6 +84,7 @@ impl PerfEvent {
                 &mut self.attr as *mut ffi::perf_event_attr,
             )?;
         }
+        debug!("PerfEvent modified: {:?}", self.attr);
         Ok(())
     }
 
@@ -91,6 +96,7 @@ impl PerfEvent {
         unsafe {
             ffi::perf_event_ioc_period(self.file.as_raw_fd(), freq)?;
         }
+        debug!("PerfEvent modified: {:?}", self.attr);
         Ok(())
     }
 }
@@ -375,6 +381,8 @@ impl PerfEventBuilder {
             self.leader,
             ffi::PERF_FLAG_FD_CLOEXEC as _,
         )?;
+
+        debug!("Opened PerfEvent with attributes {:?}", attr);
 
         // Get ringbuffer corresponding to the fd
         let ring_buffer = if self.is_sampled {

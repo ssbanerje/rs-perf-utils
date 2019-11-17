@@ -1,0 +1,24 @@
+#!/bin/sh
+
+# Cargo fmt
+diff=$(cargo fmt -- --check)
+result=$?
+if [[ ${result} -ne 0 ]] ; then
+    cat <<\EOF
+Run `cargo fmt` first.
+EOF
+    exit 1
+fi
+
+
+# Cargo clippy
+diff=$(cargo clippy)
+result=$?
+if [[ ${result} -ne 0 ]] ; then
+    cat <<\EOF
+Fix clippy errors.
+EOF
+    exit 1
+fi
+
+exit 0
