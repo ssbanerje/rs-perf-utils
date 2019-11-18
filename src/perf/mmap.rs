@@ -21,16 +21,22 @@ lazy_static! {
 }
 
 /// Internal implementation of the `read_data_head` function.
-unsafe fn _read_data_head(header: &ffi::perf_event_mmap_page) -> u64 {
-    let head = std::ptr::read_volatile(&header.data_head);
+fn _read_data_head(header: *const ffi::perf_event_mmap_page) -> u64 {
+    let head = unsafe {
+        let header = &*header;
+        std::ptr::read_volatile(&header.data_head)
+    };
     std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
     head
 }
 
 /// Internal implementation og the `write_data_tail` function.
-unsafe fn _write_data_tail(header: &mut ffi::perf_event_mmap_page, value: u64) {
+fn _write_data_tail(header: *mut ffi::perf_event_mmap_page, value: u64) {
+    let header = unsafe { &mut *header };
     std::sync::atomic::fence(std::sync::atomic::Ordering::AcqRel);
-    std::ptr::write_volatile(&mut header.data_tail, value);
+    unsafe {
+        std::ptr::write_volatile(&mut header.data_tail, value);
+    }
 }
 
 /// Userspace wrapper for the sampled/mmaped perf events.
@@ -117,9 +123,7 @@ impl RingBuffer {
         self.total_bytes_read += bytes_read;
 
         // Write value to data_tail
-        unsafe {
-            _write_data_tail(&mut *header, self.total_bytes_read);
-        }
+        _write_data_tail(header, self.total_bytes_read);
     }
 
     /// Checks whether there are pending events.
@@ -129,7 +133,7 @@ impl RingBuffer {
     /// Subsequent calls to `event_pending` and `events` are not guaranteed to be perform an atomic
     /// check (i.e., events can be enqueued into the buffer in between calls).
     pub fn events_pending(&self) -> bool {
-        let head = unsafe { _read_data_head(&*self.header) };
+        let head = _read_data_head(self.header);
         let tail = unsafe { &*self.header }.data_tail;
         (tail % self.size as u64) != (head % self.size as u64)
     }
@@ -179,9 +183,8 @@ pub struct RingBufferIter<'m> {
 impl<'m> RingBufferIter<'m> {
     /// Create a new iterator for a `RingBuffer`.
     pub(crate) fn new(buf: &'m mut RingBuffer) -> Self {
-        let header = unsafe { &mut *buf.header };
-        let data_head = unsafe { _read_data_head(header) };
-        let data_tail = header.data_tail as u64; // Does not need to read volatile as only this process will make writes
+        let data_head = _read_data_head(buf.header);
+        let data_tail = unsafe { (*buf.header).data_tail as u64 }; // Does not need to read volatile as only this process will make writes
         RingBufferIter {
             data: unsafe { std::slice::from_raw_parts_mut(buf.base, buf.size) },
             next_idx: data_tail % buf.size as u64,
@@ -194,16 +197,16 @@ impl<'m> RingBufferIter<'m> {
     /// Get the `RawRecord` at position `self.next`.
     #[allow(clippy::cast_ptr_alignment)]
     #[inline(always)]
-    unsafe fn _get_next_record(&self) -> &'m RawRecord {
+    fn _get_next_record(&self) -> &'m RawRecord {
         let ptr = &self.data[self.next_idx as usize] as *const u8 as *const RawRecord;
-        &*ptr
+        unsafe { &*ptr }
     }
 
     /// Get the `RawRecord` stored in `self.extra`.
     #[allow(clippy::cast_ptr_alignment)]
     #[inline(always)]
-    unsafe fn _get_record_at_extra(&self) -> &'m RawRecord {
-        &*(&self.extra as *const u8 as *const RawRecord)
+    fn _get_record_at_extra(&self) -> &'m RawRecord {
+        unsafe { &*(&self.extra as *const u8 as *const RawRecord) }
     }
 }
 
@@ -217,7 +220,7 @@ impl<'m> Iterator for RingBufferIter<'m> {
         }
 
         // Get new record
-        let mut evt = unsafe { self._get_next_record() };
+        let mut evt = self._get_next_record();
 
         // Update next
         let next = self.next_idx + evt.header.size as u64;
@@ -236,7 +239,7 @@ impl<'m> Iterator for RingBufferIter<'m> {
             self.extra[dst_range].copy_from_slice(&self.data[src_range]);
 
             // Set evt to point to the extra buffer
-            evt = unsafe { self._get_record_at_extra() };
+            evt = self._get_record_at_extra();
 
             // Done
             num_at_beg

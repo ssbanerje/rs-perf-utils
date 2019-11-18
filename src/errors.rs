@@ -14,9 +14,12 @@ pub enum Error {
     /// Errors originating from calls to `regex::*`.
     #[fail(display = "Regex Error - {}", _0)]
     Regex(#[cause] regex::Error),
-    /// Errors originating from calls to `glob::*`.
+    /// Errors parsing Glob patterns.
     #[fail(display = "Glob Error - {}", _0)]
-    Glob(#[cause] glob::PatternError),
+    GlobPattern(#[cause] glob::PatternError),
+    /// Errors interating over entries in a glob.
+    #[fail(display = "Glob Error - {}", _0)]
+    GlobIter(#[cause] glob::GlobError),
     /// Errors caused by parsing integers from strings.
     #[fail(display = "Parse Error - {}", _0)]
     ParseInt(#[cause] std::num::ParseIntError),
@@ -65,7 +68,8 @@ macro_rules! error_from {
 error_from!(std::io::Error => Error::IO);
 error_from!(std::env::VarError => Error::Env);
 error_from!(regex::Error => Error::Regex);
-error_from!(glob::PatternError => Error::Glob);
+error_from!(glob::PatternError => Error::GlobPattern);
+error_from!(glob::GlobError => Error::GlobIter);
 error_from!(std::num::ParseIntError => Error::ParseInt);
 error_from!(std::str::Utf8Error => Error::ParseUtf8);
 error_from!(pest::error::Error<crate::pmu::Rule> => Error::ParseMetricExpr);

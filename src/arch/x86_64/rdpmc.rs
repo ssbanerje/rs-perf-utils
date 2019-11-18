@@ -7,22 +7,10 @@ extern "C" {
     fn rdpmc(counter: u32) -> u64;
 }
 
-/*
-unsafe fn rdpmc(counter: u32) -> u64 {
-    let mut low = 0u32;
-    let mut high = 0u32;
-    asm!("rdpmc" : "=a" (low), "=d" (high) : "c" (counter));
-    (low as u64) | ((high as u64) << 32)
-}
-*/
-
 /// Read a counter using the `rdpmc` instruction from it's `perf_event_mmap_page`.
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn read_counter_rdpmc(buf: *mut ffi::perf_event_mmap_page) -> Result<u64> {
-    unsafe {
-        if (*buf).__bindgen_anon_1.__bindgen_anon_1.cap_user_rdpmc() == 0 {
-            return Err(Error::PerfNotCapable);
-        }
+pub fn read_counter_rdpmc(buf: &ffi::perf_event_mmap_page) -> Result<u64> {
+    if unsafe { buf.__bindgen_anon_1.__bindgen_anon_1.cap_user_rdpmc() } == 0 {
+        return Err(Error::PerfNotCapable);
     }
     // Read counter
     let mut val: u64;
@@ -30,18 +18,17 @@ pub fn read_counter_rdpmc(buf: *mut ffi::perf_event_mmap_page) -> Result<u64> {
     let mut seq: u32;
     let mut idx: u32;
     loop {
-        let pc: &ffi::perf_event_mmap_page = unsafe { &*buf };
-        seq = pc.lock;
+        seq = buf.lock;
         std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
-        idx = pc.index;
-        offset = pc.offset;
+        idx = buf.index;
+        offset = buf.offset;
         if idx == 0 {
             val = 0;
             break;
         }
         val = unsafe { rdpmc(idx - 1) };
         std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
-        if seq != pc.lock {
+        if seq != buf.lock {
             break;
         }
     }
@@ -50,12 +37,11 @@ pub fn read_counter_rdpmc(buf: *mut ffi::perf_event_mmap_page) -> Result<u64> {
 
 impl HardwareReadable for PerfEvent {
     fn read_hw(&self) -> Result<u64> {
-        let buf = if let Some(ref rb) = self.ring_buffer {
-            rb.header
+        if let Some(ref rb) = self.ring_buffer {
+            read_counter_rdpmc(unsafe { &*rb.header })
         } else {
-            return Err(Error::NoneError);
-        };
-        read_counter_rdpmc(buf)
+            Err(Error::NoneError)
+        }
     }
 }
 

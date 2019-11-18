@@ -1,10 +1,13 @@
-use nix::libc;
+//! Utilities to read and write to PCIe device files.
+
+use crate::Result;
+use std::os::unix::io::AsRawFd;
 
 #[derive(Debug)]
 /// Handle to PCI device to read and write data
 pub struct PciHandle {
-    /// File descriptor to underlying device file
-    fd: libc::c_int,
+    /// Underlying device file
+    file: std::fs::File,
     /// Bus ID
     bus: u32,
     /// Device ID
@@ -14,64 +17,43 @@ pub struct PciHandle {
 }
 
 impl PciHandle {
-    /// Create a new PCI handle
+    /// Create a new PCI handle.
     pub fn new_pci_handle(
         grp_num: Option<u32>,
         bus: u32,
         device: u32,
         function: u32,
     ) -> crate::Result<PciHandle> {
-        let path = if let Some(gnum) = grp_num {
-            format!(
-                "/proc/bus/pci/{:4X}:{:2X}/{:2X}.{:2X}",
-                gnum, bus, device, function
-            )
+        let bus_str = if let Some(gnum) = grp_num {
+            format!("{:4x}:{:2x}", gnum, bus)
         } else {
-            format!("/proc/bus/pci/{:2X}/{:2X}.{:2X}", bus, device, function)
+            format!("{:2x}", bus)
         };
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!(
+                "/proc/bus/pci/{}/{:2x}.{:2x}",
+                bus_str, bus, device,
+            ))?;
 
-        match unsafe { libc::open(path.as_ptr() as _, libc::O_RDWR) } {
-            err if err < 0 => Err(crate::Error::from_errno()),
-            fd => Ok(PciHandle {
-                fd,
-                bus,
-                device,
-                function,
-            }),
-        }
+        Ok(PciHandle {
+            file,
+            bus,
+            device,
+            function,
+        })
     }
 
-    /// Read data from handle
-    pub fn read<T>(&self, offset: i64, val: &mut T) -> isize {
-        unsafe {
-            libc::pread(
-                self.fd,
-                val as *mut T as _,
-                std::mem::size_of::<T>(),
-                offset,
-            )
-        }
+    /// Read `val` from handle at `offset` in the device file.
+    ///
+    /// This tries to avoid an allocation for val.
+    pub fn read(&self, val: &mut [u8], offset: i64) -> Result<usize> {
+        nix::sys::uio::pread(self.file.as_raw_fd(), val, offset).map_err(|x| x.into())
     }
 
-    /// Write data to handle.
-    pub fn write<T>(&self, offset: i64, val: T) -> isize {
-        unsafe {
-            libc::pwrite(
-                self.fd,
-                &val as *const T as _,
-                std::mem::size_of::<T>(),
-                offset,
-            )
-        }
-    }
-}
-
-impl Drop for PciHandle {
-    fn drop(&mut self) {
-        if self.fd > 0 {
-            unsafe {
-                libc::close(self.fd);
-            }
-        }
+    /// Write `val` to handle at `offset` in the device file.
+    pub fn write(&self, val: &[u8], offset: i64) -> Result<usize> {
+        nix::sys::uio::pwrite(self.file.as_raw_fd(), val, offset).map_err(|x| x.into())
     }
 }
