@@ -29,7 +29,7 @@ fn main() -> perf_utils::Result<()> {
         .find_pmu_by_name(r"INST_RETIRED.ANY")?
         .pop()
         .unwrap()
-        .to_perf_event_attr(Some(&pmu.events));
+        .to_perf_event_attr(Some(&pmu.events))?;
     let mut events = PerfEvent::build()
         .set_period(100)
         .enable_sampling()

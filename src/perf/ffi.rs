@@ -80,7 +80,7 @@ impl perf_event_attr {
         if !pmus.is_empty() {
             pmus.pop().unwrap()
         } else {
-            Err(Error::PmuNotFound)
+            Err(Error::PerfNotCapable)
         }
     }
 

@@ -14,6 +14,9 @@ pub enum Error {
     /// Errors originating from calls to `regex::*`.
     #[fail(display = "Regex Error - {}", _0)]
     Regex(#[cause] regex::Error),
+    /// Errors originating from calls to `glob::*`.
+    #[fail(display = "Glob Error - {}", _0)]
+    Glob(#[cause] glob::PatternError),
     /// Errors caused by parsing integers from strings.
     #[fail(display = "Parse Error - {}", _0)]
     ParseInt(#[cause] std::num::ParseIntError),
@@ -26,6 +29,9 @@ pub enum Error {
     /// Errors originating from calls to `libc` or other system utilties.
     #[fail(display = "System Error - {}", _0)]
     System(#[cause] nix::Error),
+    /// Caused when a `None` value is read.
+    #[fail(display = "Tried to read a None value")]
+    NoneError,
     /// Errors caused by capability checks on the kernel.
     #[fail(display = "Not allowed by kernel")]
     PerfNotCapable,
@@ -35,12 +41,6 @@ pub enum Error {
     /// unimplemented.
     #[fail(display = "Error while parsing PMU JSON files.")]
     ParsePmu,
-    /// Errors in finding PMU under current system configuration.
-    #[fail(display = "Could not find PMU")]
-    PmuNotFound,
-    /// Caused when a perf event is not read by the correct method.
-    #[fail(display = "This perf counter cannot be read using this method")]
-    WrongReadMethod,
 }
 
 impl Error {
@@ -65,6 +65,7 @@ macro_rules! error_from {
 error_from!(std::io::Error => Error::IO);
 error_from!(std::env::VarError => Error::Env);
 error_from!(regex::Error => Error::Regex);
+error_from!(glob::PatternError => Error::Glob);
 error_from!(std::num::ParseIntError => Error::ParseInt);
 error_from!(std::str::Utf8Error => Error::ParseUtf8);
 error_from!(pest::error::Error<crate::pmu::Rule> => Error::ParseMetricExpr);

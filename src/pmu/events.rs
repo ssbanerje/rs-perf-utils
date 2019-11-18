@@ -1,7 +1,7 @@
 use crate::perf::ffi::{perf_event_attr, perf_type_id};
 use crate::perf::PerfVersion;
 use crate::{pmu::MetricExpr, Result};
-use log::warn;
+use log::{error, warn};
 
 /// Raw event format represented in the JSON event files.
 pub type RawEvent = std::collections::HashMap<String, String>;
@@ -22,20 +22,21 @@ pub struct PmuEvent {
     /// Stores whether this `PmuEvent` is derived from several other events.
     pub is_metric: bool,
 
+    // Fields dealing with plain events
     event_code: Option<u64>,
     umask: Option<u64>,
     cmask: Option<u8>,
     edge: bool,
     inv: bool,
-    per_pkg: Option<String>,
-    pebs: Option<i32>,
     msr: Option<u64>,
     msr_val: Option<u64>,
-    filter: Option<String>,
     pmu: Option<String>,
     unit: Option<String>,
-    extra: Option<String>,
+    offcore_rsp: bool,
+    ldlat: bool,
+    frontend: bool,
 
+    // Fields dealing with derived events
     metric_group: Option<String>,
     metric_expr: Option<String>,
     parsed_metric_expr: Option<MetricExpr>,
@@ -90,18 +91,6 @@ impl PmuEvent {
             if let Some(i) = raw_event.get("Invert") {
                 evt.inv = (i.parse::<i32>()?) != 0;
             }
-            if let Some(s) = raw_event.get("ScaleUnit") {
-                evt.unit = Some(s.clone());
-            }
-            if let Some(p) = raw_event.get("PerPkg") {
-                evt.per_pkg = Some(p.clone());
-            }
-            if let Some(p) = raw_event.get("PEBS") {
-                evt.pebs = Some(p.parse()?);
-            }
-            if let Some(f) = raw_event.get("Filter") {
-                evt.filter = Some(f.clone());
-            }
             if let Some(msr) = raw_event.get("MSRIndex") {
                 let split: Vec<&str> = msr.split(',').collect();
                 evt.msr = if split[0].len() == 1 {
@@ -116,15 +105,13 @@ impl PmuEvent {
                 } else {
                     Some(u64::from_str_radix(&val[2..], 16)?)
                 };
-
                 let msr = evt.msr.unwrap();
-                let msr_val = evt.msr_val.unwrap();
                 if version.offcore() && (msr == 0x1A6 || msr == 0x1A7) {
-                    evt.extra = Some(format!(",offcore_rsp={:#X}", msr_val));
+                    evt.offcore_rsp = true;
                 } else if version.ldlat() && (msr == 0x3F6) {
-                    evt.extra = Some(format!(",ldlat={:#X}", msr_val));
+                    evt.ldlat = true;
                 } else if msr == 0x3F7 {
-                    evt.extra = Some(format!(",frontend={:#X}", msr_val));
+                    evt.frontend = true;
                 }
             }
             if let Some(u) = raw_event.get("Unit") {
@@ -169,16 +156,17 @@ impl PmuEvent {
     fn _get_core_event_string(&self, is_direct: bool, put_name: bool) -> String {
         assert!(self.event_code.is_some());
         if is_direct {
-            if cfg!(target_arch = "x86_64") {
-                assert!(self.umask.is_some());
-                format!(
-                    "r{:X}{:X}",
-                    self.umask.unwrap() & 0xFF,
-                    self.event_code.unwrap() & 0xFF
-                )
+            let umask = if let Some(u) = self.umask {
+                format!("{:X}", u & 0xFF)
             } else {
-                format!("r{:X}", self.event_code.unwrap())
-            }
+                String::default()
+            };
+            let event_code = if cfg!(target_arch = "x86_64") {
+                self.event_code.unwrap() & 0xFF
+            } else {
+                self.event_code.unwrap()
+            };
+            format!("r{}{:X}", umask, event_code)
         } else {
             let umask = if let Some(u) = self.umask {
                 format!(",umask={:#X}", u)
@@ -270,7 +258,9 @@ impl PmuEvent {
     /// `events` is a reference to the entire database of events that has to be searched to find the
     /// correct `PmuEvent` corresponding to the metric.
     fn _get_metric_events<'a>(&self, events: Option<&'a Vec<PmuEvent>>) -> Vec<&'a PmuEvent> {
-        assert!(self.is_metric);
+        if !self.is_metric {
+            return vec![];
+        }
         let vars = match self.parsed_metric_expr {
             Some(ref expr) => expr.get_counters(),
             _ => unreachable!(), // If this is a metric, the metric_expr must be set!
@@ -321,13 +311,20 @@ impl PmuEvent {
     ///
     /// If this event is a derived event, then it returns multiple `perf_event_attrs` corresponding
     /// to all events that need to be collected.
-    pub fn to_perf_event_attr(&self, events: Option<&Vec<PmuEvent>>) -> Vec<perf_event_attr> {
-        // TODO Unsure if this works on a PowerPC machine
-        if !self.is_metric {
+    pub fn to_perf_event_attr(
+        &self,
+        events: Option<&Vec<PmuEvent>>,
+    ) -> Result<Vec<perf_event_attr>> {
+        let evts = if !self.is_metric {
             let mut attr = perf_event_attr::default();
             attr.type_ = perf_type_id::PERF_TYPE_RAW as _;
+            attr.size = std::mem::size_of::<perf_event_attr>() as _;
             if let Some(e) = self.event_code {
-                attr.config |= e & 0xFF;
+                if cfg!(target_arch = "x86_64") {
+                    attr.config |= e & 0xFF;
+                } else {
+                    attr.config |= e;
+                }
             }
             if let Some(u) = self.umask {
                 attr.config |= (u as u64 & 0xFF) << 8;
@@ -341,24 +338,22 @@ impl PmuEvent {
             if self.edge {
                 attr.config |= 1u64 << 18;
             }
-            if let Some(ref extra) = self.extra {
-                if extra.contains("offcore_rsp") {
-                    unsafe { attr.__bindgen_anon_3.config1 |= self.msr_val.unwrap() }
-                } else if extra.contains("ldlat") {
-                    unsafe { attr.__bindgen_anon_3.config1 |= self.msr_val.unwrap() & 0xFFFF }
-                }
+            if self.offcore_rsp {
+                unsafe { attr.__bindgen_anon_3.config1 |= self.msr_val.unwrap() }
+            } else if self.ldlat {
+                unsafe { attr.__bindgen_anon_3.config1 |= self.msr_val.unwrap() & 0xFFFF }
             }
             if let Some(ref pmu) = self.pmu {
-                glob::glob(&format!("/sys/devices/{}*/type", pmu))
-                    .unwrap()
+                glob::glob(&format!("/sys/devices/{}*/type", pmu))?
                     .filter_map(std::result::Result::ok)
-                    .map(|x| {
+                    .map(|path| {
                         let mut a = attr;
-                        a.type_ = std::fs::read_to_string(&x)
-                            .unwrap()
-                            .trim()
-                            .parse::<u32>()
-                            .unwrap();
+                        a.type_ = std::fs::read_to_string(&path)
+                            .map(|s| s.trim().parse::<u32>().unwrap())
+                            .unwrap_or_else(|_| {
+                                error!("Could not read {:?} for event {}", path, self.name);
+                                0
+                            });
                         a
                     })
                     .collect()
@@ -368,9 +363,10 @@ impl PmuEvent {
         } else {
             self._get_metric_events(events)
                 .iter()
-                .flat_map(|x| x.to_perf_event_attr(None))
+                .flat_map(|x| x.to_perf_event_attr(None).unwrap_or_else(|_| vec![]))
                 .collect()
-        }
+        };
+        Ok(evts)
     }
 }
 
@@ -388,10 +384,10 @@ mod tests {
     use std::process::{Command, Stdio};
 
     #[test]
-    fn test_pmuevent_to_perfstring() {
-        let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
-        let pmu = Pmu::from_local_cpu(pmu_events_path).unwrap();
-        let pv = PerfVersion::get_details_from_tool().unwrap();
+    fn test_pmuevent_to_perfstring() -> Result<()> {
+        let pmu_events_path = std::env::var("PMU_EVENTS")?;
+        let pmu = Pmu::from_local_cpu(pmu_events_path)?;
+        let pv = PerfVersion::get_details_from_tool()?;
         let perf_strings: Vec<String> = pmu
             .events
             .iter()
@@ -409,15 +405,17 @@ mod tests {
                 stat.success()
             });
         assert!(res);
+        Ok(())
     }
 
     #[test]
-    fn test_perf_event_attr_gen() {
-        let pmu_events_path = std::env::var("PMU_EVENTS").unwrap();
-        let pmu = Pmu::from_local_cpu(pmu_events_path).unwrap();
+    fn test_perf_event_attr_gen() -> Result<()> {
+        let pmu_events_path = std::env::var("PMU_EVENTS")?;
+        let pmu = Pmu::from_local_cpu(pmu_events_path)?;
         for evt in pmu.events.iter() {
-            let attr = evt.to_perf_event_attr(Some(&pmu.events));
-            assert!(!attr.is_empty());
+            let x = evt.to_perf_event_attr(Some(&pmu.events));
+            assert!(x.is_ok());
         }
+        Ok(())
     }
 }

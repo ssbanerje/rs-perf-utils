@@ -78,9 +78,10 @@ impl MetricExpr {
     /// Get names of all counters used in this expression.
     pub fn get_counters(&self) -> Vec<&String> {
         macro_rules! body {
-            ($a:expr, $b:expr) => {{
+            ($a:expr) => { $a.get_counters() };
+            ($a:expr, $($b:expr),*) => {{
                 let mut tmp = $a.get_counters();
-                tmp.extend($b.get_counters());
+                $(tmp.extend($b.get_counters());)*
                 tmp
             }};
         };
@@ -90,8 +91,9 @@ impl MetricExpr {
             MetricExpr::Sub(ref a, ref b) => body!(a, b),
             MetricExpr::Mul(ref a, ref b) => body!(a, b),
             MetricExpr::Div(ref a, ref b) => body!(a, b),
-            MetricExpr::Min(ref a) => a.get_counters(),
+            MetricExpr::Min(ref a) => body!(a),
             MetricExpr::Comma(ref a, ref b) => body!(a, b),
+            MetricExpr::If(ref a, ref b, ref c) => body!(a, b, c),
             _ => vec![],
         }
     }

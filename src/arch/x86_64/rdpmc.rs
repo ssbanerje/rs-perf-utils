@@ -50,14 +50,10 @@ pub fn read_counter_rdpmc(buf: *mut ffi::perf_event_mmap_page) -> Result<u64> {
 
 impl HardwareReadable for PerfEvent {
     fn read_hw(&self) -> Result<u64> {
-        // Check capability
-        if self.ring_buffer.is_none() {
-            return Err(Error::WrongReadMethod);
-        }
         let buf = if let Some(ref rb) = self.ring_buffer {
             rb.header
         } else {
-            unreachable!()
+            return Err(Error::NoneError);
         };
         read_counter_rdpmc(buf)
     }
@@ -77,7 +73,7 @@ mod tests {
             .find_pmu_by_name(r"INST_RETIRED.ANY")?
             .pop()
             .unwrap()
-            .to_perf_event_attr(Some(&pmu.events))
+            .to_perf_event_attr(Some(&pmu.events))?
             .pop()
             .unwrap();
         let evt = PerfEvent::build()

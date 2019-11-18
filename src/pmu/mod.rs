@@ -23,6 +23,13 @@ pub struct Pmu {
     raw_events: Vec<RawEvent>,
 }
 
+/// Check if `entry` is a JSON file.
+fn _is_json_file(entry: &std::fs::DirEntry) -> crate::Result<(bool, String)> {
+    let file_name = entry.file_name().into_string().unwrap();
+    let is_js = entry.metadata()?.is_file() && file_name.ends_with(".json");
+    Ok((is_js, file_name))
+}
+
 impl Pmu {
     /// Load PMU event information for local CPU from the specified path.
     pub fn from_local_cpu(path: String) -> crate::Result<Self> {
@@ -33,43 +40,45 @@ impl Pmu {
     /// Load CPU-specific PMU information from the specified path.
     pub fn from_cpu_str(cpu: String, path: String) -> crate::Result<Self> {
         // Check for global events
-        let mut json_files: Vec<String> = std::fs::read_dir(&path)
-            .unwrap()
-            .filter_map(std::result::Result::ok)
-            .filter(|x| {
-                std::fs::metadata(x.path()).unwrap().is_file()
-                    && x.file_name().into_string().unwrap().ends_with(".json")
+        let mut json_files: Vec<String> = std::fs::read_dir(&path)?
+            .filter_map(Result::ok)
+            .filter_map(|x| match _is_json_file(&x) {
+                Ok((true, f)) => Some(f),
+                _ => None,
             })
-            .map(|x| x.file_name().into_string().unwrap())
             .collect();
 
         // Check mapfile for paths
         let mapfile = std::fs::File::open(format!("{}/{}", &path, "mapfile.csv"))?;
         let mapped_files = BufReader::new(mapfile)
             .lines()
-            .filter_map(std::result::Result::ok)
-            .filter(|l| !l.starts_with('#') && !l.starts_with('\n') && !l.is_empty())
+            // Remove bad lines
+            .filter_map(Result::ok)
+            // Remove comments and empty lines
+            .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('\n'))
+            // Get filename from file
             .filter_map(|l| {
                 let splits: Vec<&str> = l.split(',').collect();
-                if Regex::new(splits[0]).unwrap().is_match(&cpu) {
-                    Some(String::from(splits[2]))
-                } else {
-                    None
-                }
+                Regex::new(splits[0]).ok().and_then(|ref x| {
+                    if x.is_match(&cpu) {
+                        Some(String::from(splits[2]))
+                    } else {
+                        None
+                    }
+                })
             })
+            // Check if mapfile entry is a file or a directory... in case of directory read it
             .flat_map(|f: String| {
                 let full_path = format!("{}/{}", path, f);
-                if std::fs::metadata(&full_path).unwrap().is_file() {
+                if std::path::Path::new(&full_path).is_file() {
                     vec![full_path]
                 } else {
                     std::fs::read_dir(&full_path)
-                        .unwrap()
-                        .filter_map(|x| match x {
-                            Ok(f) => Some(format!(
-                                "{}/{}",
-                                &full_path,
-                                f.file_name().into_string().unwrap()
-                            )),
+                        .map(|x| x.filter_map(Result::ok).collect())
+                        .unwrap_or_else(|_| vec![])
+                        .iter()
+                        .filter_map(|x| match _is_json_file(x) {
+                            Ok((true, x)) => Some(format!("{}/{}", &full_path, x)),
                             _ => None,
                         })
                         .collect()
@@ -80,7 +89,7 @@ impl Pmu {
         let raw_events: Vec<RawEvent> = json_files
             .iter()
             .flat_map(|f| {
-                let s = std::fs::read_to_string(f).unwrap();
+                let s = std::fs::read_to_string(f).unwrap_or_else(|_| String::default());
                 let mut j: Vec<HashMap<String, String>> = match serde_json::from_str(s.as_str()) {
                     Ok(v) => v,
                     Err(e) => {
@@ -92,8 +101,7 @@ impl Pmu {
                     // Add the file name as a topic
                     let fname = std::path::Path::new(&f)
                         .file_name()
-                        .unwrap()
-                        .to_str()
+                        .and_then(|x| x.to_str())
                         .unwrap();
                     x.entry(String::from("Topic"))
                         .or_insert_with(|| String::from(&fname[0..fname.len() - 5]));

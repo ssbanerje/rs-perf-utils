@@ -119,6 +119,9 @@ pub struct PerfEventValue {
 
 impl PerfEventValue {
     /// Parse this structure from a serialized in-memory format provided by the kernel.
+    ///
+    /// The structure parsed here is based on the configuration of enclosing `PerfEvent`'s attribute
+    /// set in `PerfEventBuilder::open`.
     pub fn from_cursor<T>(ptr: &mut std::io::Cursor<T>) -> Result<Self>
     where
         std::io::Cursor<T>: byteorder::ReadBytesExt,
@@ -158,9 +161,6 @@ pub trait OsReadable {
 
 impl OsReadable for PerfEvent {
     fn read_fd(&self) -> Result<u64> {
-        if self.ring_buffer.is_some() {
-            return Err(Error::WrongReadMethod);
-        }
         let mut bytes = [0u8; 8];
         nix::unistd::read(self.file.as_raw_fd(), &mut bytes)?;
         Ok(u64::from_ne_bytes(bytes))
@@ -168,24 +168,25 @@ impl OsReadable for PerfEvent {
 
     fn read_samples(&mut self) -> Result<Vec<PerfEventValue>> {
         if let Some(ref mut rb) = self.ring_buffer {
+            let mut num_evts = 0usize;
             let evts: Vec<PerfEventValue> = rb
                 .events()
                 .filter_map(|e| {
+                    num_evts += 1;
                     if e.is_sample() {
-                        Some(match e.parse().unwrap() {
-                            crate::perf::ParsedRecord::Sample(s) => s,
+                        match e.parse().unwrap() {
+                            crate::perf::ParsedRecord::Sample(s) => Some(s.value),
                             _ => unreachable!(),
-                        })
+                        }
                     } else {
                         None
                     }
                 })
-                .map(|e| e.value)
                 .collect();
-            rb.advance(Some(evts.len()));
+            rb.advance(Some(num_evts));
             Ok(evts)
         } else {
-            Err(Error::WrongReadMethod)
+            Err(Error::NoneError)
         }
     }
 }
