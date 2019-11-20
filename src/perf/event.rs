@@ -206,7 +206,9 @@ impl OsReadable for PerfEvent {
 /// Some architectures may not implement this trait.
 pub trait HardwareReadable {
     /// Read counter.
-    fn read_hw(&self) -> Result<u64>;
+    ///
+    /// The function returns a `PerfEventValue`. However it will not set the `id` field.
+    fn read_hw(&self) -> Result<PerfEventValue>;
 }
 
 /// Helper struct to build a `PerfEvent` object.

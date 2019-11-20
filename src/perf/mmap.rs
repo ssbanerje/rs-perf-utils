@@ -22,10 +22,8 @@ lazy_static! {
 
 /// Internal implementation of the `read_data_head` function.
 fn _read_data_head(header: *const ffi::perf_event_mmap_page) -> u64 {
-    let head = unsafe {
-        let header = &*header;
-        std::ptr::read_volatile(&header.data_head)
-    };
+    let header = unsafe { &*header };
+    let head = volatile!(header.data_head);
     std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
     head
 }
@@ -34,9 +32,7 @@ fn _read_data_head(header: *const ffi::perf_event_mmap_page) -> u64 {
 fn _write_data_tail(header: *mut ffi::perf_event_mmap_page, value: u64) {
     let header = unsafe { &mut *header };
     std::sync::atomic::fence(std::sync::atomic::Ordering::AcqRel);
-    unsafe {
-        std::ptr::write_volatile(&mut header.data_tail, value);
-    }
+    volatile!(header.data_tail, value);
 }
 
 /// Userspace wrapper for the sampled/mmaped perf events.
@@ -184,7 +180,7 @@ impl<'m> RingBufferIter<'m> {
     /// Create a new iterator for a `RingBuffer`.
     pub(crate) fn new(buf: &'m mut RingBuffer) -> Self {
         let data_head = _read_data_head(buf.header);
-        let data_tail = unsafe { (*buf.header).data_tail as u64 }; // Does not need to read volatile as only this process will make writes
+        let data_tail = unsafe { (*buf.header).data_tail as u64 };
         RingBufferIter {
             data: unsafe { std::slice::from_raw_parts_mut(buf.base, buf.size) },
             next_idx: data_tail % buf.size as u64,

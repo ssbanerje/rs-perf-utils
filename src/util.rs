@@ -16,3 +16,13 @@ pub fn hexdump(buf: &[u8]) -> String {
         .collect();
     lines.join("\n")
 }
+
+/// Wrappers around rust's volatile reads and writes to memory.
+macro_rules! volatile {
+    ($id: expr) => {
+        unsafe { ::std::ptr::read_volatile(&$id) };
+    };
+    ($id: expr, $val: expr) => {
+        unsafe { ::std::ptr::write_volatile(&mut $id, $val) };
+    };
+}
