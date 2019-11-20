@@ -270,6 +270,9 @@ macro_rules! builder_pattern {
     ($(#[$outer:meta])* $var_name: ident : $var_type: ty) => {
         builder_pattern!($(#[$outer])* $var_name => $var_name: $var_type);
     };
+    ($(#[$outer:meta])* $var_name: ident : $var_type: ty = $val: expr) => {
+        builder_pattern!($(#[$outer])* $var_name => $var_name: $var_type = $val);
+    };
     ($(#[$outer:meta])* $name: ident => $var_name: ident : $var_type: ty) => {
         $(#[$outer])*
         pub fn $name(mut self, $var_name: $var_type) -> Self {
@@ -277,16 +280,10 @@ macro_rules! builder_pattern {
             self
         }
     };
-}
-
-macro_rules! builder_pattern_bool {
-    ($(#[$outer:meta])* $var_name: ident) => {
-        builder_pattern_bool!($(#[$outer])* $var_name => $var_name);
-    };
-    ($(#[$outer:meta])* $name: ident => $var_name: ident) => {
+    ($(#[$outer:meta])* $name: ident => $var_name: ident : $var_type: ty = $val: expr) => {
         $(#[$outer])*
         pub fn $name(mut self) -> Self {
-            self.$var_name = true;
+            self.$var_name = $val;
             self
         }
     };
@@ -460,34 +457,34 @@ impl PerfEventBuilder {
         set_frequency => freq_or_period: u64
     );
 
-    builder_pattern_bool!(
+    builder_pattern!(
         /// Use frequency for this counter.
-        use_frequency => use_freq
+        use_frequency => use_freq: bool = true
     );
 
-    builder_pattern_bool!(
+    builder_pattern!(
         /// Turns on kernel measurements.
-        collect_kernel
+        collect_kernel: bool = true
     );
 
-    builder_pattern_bool!(
+    builder_pattern!(
         /// Inherit to children processes.
-        inherit
+        inherit: bool = true
     );
 
-    builder_pattern_bool!(
+    builder_pattern!(
         /// Start the counter disabled.
-        start_disabled
+        start_disabled: bool = true
     );
 
-    builder_pattern_bool!(
+    builder_pattern!(
         /// Gather data about context switches.
-        gather_context_switches
+        gather_context_switches: bool = true
     );
 
-    builder_pattern_bool!(
+    builder_pattern!(
         /// This performance counter will be sampled and accessed through the RingBuffer.
-        enable_sampling => is_sampled
+        enable_sampling => is_sampled: bool = true
     );
 
     builder_pattern!(

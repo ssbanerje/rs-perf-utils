@@ -3,6 +3,7 @@
 use crate::perf::*;
 use crate::Result;
 use byteorder::{NativeEndian, ReadBytesExt};
+use derive_more::{Index, IndexMut};
 use lazy_static::lazy_static;
 use log::debug;
 use nix::libc;
@@ -151,6 +152,9 @@ unsafe impl Send for RingBuffer {}
 ///
 /// `'m` corresponds to the lifetime of the containing `RingBuffer`.
 ///
+/// The `RingBuffer` also allows directly accessing the bytes of the mapped buffer using the the
+/// `index` and `index_mut` functions.
+///
 /// # Memory layout
 /// ```text
 ///      +--data+------+
@@ -163,8 +167,11 @@ unsafe impl Send for RingBuffer {}
 ///      |             |
 ///      +-------------+
 /// ```
+#[derive(Index, IndexMut)]
 pub struct RingBufferIter<'m> {
     /// Pointer to the start of the data section of the `RingBuffer`.
+    #[index]
+    #[index_mut]
     data: &'m mut [u8],
     /// Byte index of the last item read from userspace (wrapped).
     next_idx: u64,
@@ -271,7 +278,7 @@ unsafe impl Send for RingBufferIter<'_> {}
 
 /// Individual record in a `RingBuffer`.
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub struct RawRecord {
     /// Event header containing information about type of the event.
     pub header: ffi::perf_event_header,
@@ -281,7 +288,6 @@ pub struct RawRecord {
 
 impl RawRecord {
     /// Check if this record is measurement sample.
-    #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn is_sample(&self) -> bool {
         self.header.type_ == ffi::perf_event_type::PERF_RECORD_SAMPLE as u32
     }
@@ -294,7 +300,6 @@ impl RawRecord {
     /// # Note
     /// The implementation of this function is closely tied to that of the `PerfEventBuilder` with
     /// only configurations supported there being implemented here.
-    #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn parse(&self) -> Result<ParsedRecord> {
         let raw_data = unsafe {
             std::slice::from_raw_parts(

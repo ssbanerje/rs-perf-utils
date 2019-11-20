@@ -1,9 +1,10 @@
 //! Utilities dealing with error handling in this crate.
 
+use derive_more::From;
 use failure::Fail;
 
 /// Errors produced by this crate.
-#[derive(Debug, Fail)]
+#[derive(Debug, Fail, From)]
 pub enum Error {
     /// Errors originating from calls to `std::io::*`.
     #[fail(display = "IO Error - {}", _0)]
@@ -50,26 +51,6 @@ impl Error {
         Error::System(nix::Error::Sys(nix::errno::Errno::last()))
     }
 }
-
-macro_rules! error_from {
-    ($et: ty => $cet: expr) => {
-        impl From<$et> for Error {
-            #[inline]
-            fn from(err: $et) -> Self {
-                $cet(err)
-            }
-        }
-    };
-}
-
-error_from!(std::io::Error => Error::IO);
-error_from!(std::env::VarError => Error::Env);
-error_from!(regex::Error => Error::Regex);
-error_from!(glob::PatternError => Error::Glob);
-error_from!(std::num::ParseIntError => Error::ParseInt);
-error_from!(std::str::Utf8Error => Error::ParseUtf8);
-error_from!(pest::error::Error<crate::pmu::Rule> => Error::ParseMetricExpr);
-error_from!(nix::Error => Error::System);
 
 /// Result type used in this crate.
 pub type Result<T> = std::result::Result<T, Error>;

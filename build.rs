@@ -18,20 +18,14 @@ fn generate_kernel_bindings() {
         .expect("Couldn't write bindings!");
 }
 
-#[cfg(target_arch = "x86_64")]
 fn compile_asm_helpers() {
-    let asm_helpers = "src/arch/x86_64/asm_helpers.c";
-    println!("cargo:rerun-if-changed={}", asm_helpers);
-    cc::Build::new()
-        .file(asm_helpers)
-        .flag("-O3")
-        .warnings_into_errors(true)
-        .compile("asm_helper");
-}
-
-#[cfg(target_arch = "powerpc64")]
-fn compile_asm_helpers() {
-    let asm_helpers = "src/arch/powerpc64/asm_helpers.c";
+    let asm_helpers = if cfg!(target_arch = "x86_64") {
+        "src/arch/x86_64/asm_helpers.c"
+    } else if cfg!(target_arch = "powerpc64") {
+        "src/arch/powerpc64/asm_helpers.c"
+    } else {
+        return;
+    };
     println!("cargo:rerun-if-changed={}", asm_helpers);
     cc::Build::new()
         .file(asm_helpers)

@@ -1,6 +1,7 @@
 //! Utilities to read and process PMU events.
 
 use crate::perf::PerfVersion;
+use derive_more::{Index, IndexMut, IntoIterator};
 use log::error;
 use regex::Regex;
 use std::collections::HashMap;
@@ -13,11 +14,14 @@ mod metrics;
 pub use metrics::{MetricExpr, Rule};
 
 /// Provides the ability to parse and interact with CPU specific PMU counters using their JSON descriptions.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Index, IndexMut, IntoIterator)]
 pub struct Pmu {
     /// String identifying CPU.
     pub cpu_str: String,
     /// List of parsed performance counter events.
+    #[index]
+    #[index_mut]
+    #[into_iterator(owned, ref, ref_mut)]
     pub events: Vec<PmuEvent>,
     /// Raw JSON-based performance counter events for the `cpu_str`.
     raw_events: Vec<RawEvent>,

@@ -376,6 +376,8 @@ impl PartialEq for PmuEvent {
     }
 }
 
+impl Eq for PmuEvent {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

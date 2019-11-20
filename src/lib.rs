@@ -5,6 +5,9 @@
 mod errors;
 pub use errors::{Error, Result};
 
+mod api;
+pub use api::{Counter, HardwareCounter, SampledCounter};
+
 pub mod perf;
 pub use perf::ffi;
 
