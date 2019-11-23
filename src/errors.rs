@@ -15,9 +15,12 @@ pub enum Error {
     /// Errors originating from calls to `regex::*`.
     #[fail(display = "Regex Error - {}", _0)]
     Regex(#[cause] regex::Error),
-    /// Errors originating from calls to `glob::*`.
+    /// Errors parsing Glob patterns.
     #[fail(display = "Glob Error - {}", _0)]
-    Glob(#[cause] glob::PatternError),
+    GlobPattern(#[cause] glob::PatternError),
+    /// Errors interating over entries in a glob.
+    #[fail(display = "Glob Error - {}", _0)]
+    GlobIter(#[cause] glob::GlobError),
     /// Errors caused by parsing integers from strings.
     #[fail(display = "Parse Error - {}", _0)]
     ParseInt(#[cause] std::num::ParseIntError),

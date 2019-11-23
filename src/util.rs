@@ -17,8 +17,12 @@ pub fn hexdump(buf: &[u8]) -> String {
     lines.join("\n")
 }
 
-/// Print a hexdump from a pointer and buffer size.
-pub fn hexdump_ptr(buf: *const u8, size: usize) -> String {
-    let slice = unsafe { std::slice::from_raw_parts(buf, size) };
-    hexdump(slice)
+/// Wrappers around rust's volatile reads and writes to memory.
+macro_rules! volatile {
+    ($id: expr) => {
+        unsafe { ::std::ptr::read_volatile(&$id) };
+    };
+    ($id: expr, $val: expr) => {
+        unsafe { ::std::ptr::write_volatile(&mut $id, $val) };
+    };
 }

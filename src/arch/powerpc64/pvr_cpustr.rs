@@ -1,5 +1,7 @@
 //! Utilities to read the PVR register
 
+use log::debug;
+
 extern "C" {
     fn mfspr_pvr() -> u32;
 }
@@ -9,7 +11,9 @@ pub fn get_cpu_string() -> String {
     let pvr = unsafe { mfspr_pvr() };
     let pvr_version = (pvr >> 16) & 0xFFFF;
     let pvr_revision = (pvr >> 0) & 0xFFFF;
-    format!("{:04x}{:04x}", pvr_version, pvr_revision)
+    let cpu = format!("{:04x}{:04x}", pvr_version, pvr_revision);
+    debug!("Detected powerpc64 processor - {}", cpu);
+    cpu
 }
 
 #[cfg(test)]

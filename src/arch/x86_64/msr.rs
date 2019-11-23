@@ -1,6 +1,7 @@
 //! Utilities to read and write model specific registers (MSRs).
 
-use nix::libc;
+use crate::Result;
+use std::os::unix::io::AsRawFd;
 
 #[derive(Debug)]
 /// Handle to read and write model specific registers.
@@ -8,57 +9,32 @@ use nix::libc;
 /// Requires the `msr` kernel module loaded.
 pub struct MsrHandle {
     /// File descriptor for MSR device file.
-    fd: libc::c_int,
+    file: std::fs::File,
 }
 
 impl MsrHandle {
     /// Get a handle to the CPU specific MSR.
-    pub fn new(cpuid: u32) -> crate::Result<MsrHandle> {
-        match unsafe {
-            libc::open(
-                format!("/dev/cpu/{}/msr", cpuid).as_ptr() as _,
-                libc::O_RDWR,
-            )
-        } {
-            err if err < 0 => Err(crate::Error::from_errno()),
-            fd => Ok(MsrHandle { fd }),
-        }
+    ///
+    /// This will require loading the `msr` kernel module.
+    pub fn new(cpuid: u32) -> crate::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("/dev/cpu/{}/msr", cpuid))?;
+        Ok(MsrHandle { file })
     }
 
     /// Write `value` to `msr`.
-    pub fn write(&self, msr: i64, value: u64) {
-        unsafe {
-            libc::pwrite(
-                self.fd,
-                &value as *const u64 as _,
-                std::mem::size_of_val(&value),
-                msr,
-            );
-        }
+    pub fn write(&self, msr: i64, value: u64) -> Result<usize> {
+        nix::sys::uio::pwrite(self.file.as_raw_fd(), &value.to_ne_bytes(), msr)
+            .map_err(|x| x.into())
     }
 
     /// Read the value of `msr`.
-    pub fn read(&self, msr: i64) -> u64 {
-        let mut value = 0u64;
-        unsafe {
-            libc::pread(
-                self.fd,
-                &mut value as *const u64 as _,
-                std::mem::size_of_val(&value),
-                msr,
-            );
-        }
-        value
-    }
-}
-
-impl Drop for MsrHandle {
-    fn drop(&mut self) {
-        if self.fd >= 0 {
-            unsafe {
-                libc::close(self.fd);
-            }
-        }
+    pub fn read(&self, msr: i64) -> Result<u64> {
+        let mut value = [0u8; 8];
+        nix::sys::uio::pread(self.file.as_raw_fd(), &mut value, msr)?;
+        Ok(u64::from_ne_bytes(value))
     }
 }
 

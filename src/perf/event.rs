@@ -133,6 +133,16 @@ impl PerfEventValue {
             id: ptr.read_u64::<NativeEndian>()?,
         })
     }
+
+    /// Calculate the scaled value from the raw value using the amount of time enabled and running.
+    ///
+    /// More details at https://perf.wiki.kernel.org/index.php/Tutorial#multiplexing_and_scaling_events.
+    pub fn get_scaled_value(&self) -> u64 {
+        let v = self.value as f64;
+        let r = self.time_running as f64;
+        let e = self.time_enabled as f64;
+        (v * r / e) as u64
+    }
 }
 
 impl PartialEq for PerfEventValue {
@@ -196,7 +206,9 @@ impl OsReadable for PerfEvent {
 /// Some architectures may not implement this trait.
 pub trait HardwareReadable {
     /// Read counter.
-    fn read_hw(&self) -> Result<u64>;
+    ///
+    /// The function returns a `PerfEventValue`. However it will not set the `id` field.
+    fn read_hw(&self) -> Result<PerfEventValue>;
 }
 
 /// Helper struct to build a `PerfEvent` object.

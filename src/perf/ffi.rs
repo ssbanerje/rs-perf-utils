@@ -37,19 +37,19 @@ pub fn perf_event_open(
     group_fd: libc::c_int,
     flags: libc::c_ulong,
 ) -> Result<std::os::unix::io::RawFd> {
-    unsafe {
-        let fd = libc::syscall(
+    let fd = unsafe {
+        libc::syscall(
             libc::SYS_perf_event_open,
             attr as *const _,
             pid,
             cpu,
             group_fd,
             flags,
-        );
-        match fd {
-            -1 => Err(Error::from_errno()),
-            rc => Ok(rc as _),
-        }
+        )
+    };
+    match fd {
+        -1 => Err(Error::from_errno()),
+        rc => Ok(rc as _),
     }
 }
 
@@ -57,28 +57,23 @@ pub fn perf_event_open(
 impl perf_event_attr {
     /// Get the PMU string from the `type_` field of a `perf_event_attr`.
     fn _get_pmu(&self) -> Result<String> {
-        let mut pmus: Vec<Result<String>> = glob::glob("/sys/devices/*/type")
-            .unwrap()
-            .filter_map(|entry| match entry {
-                Ok(ref path) => {
-                    let val: u32 = std::fs::read_to_string(path)
-                        .unwrap()
-                        .trim()
-                        .parse()
-                        .unwrap();
-                    if val == self.type_ {
-                        let pmu: &str =
-                            path.to_str().unwrap().split("/").collect::<Vec<&str>>()[3].into();
-                        Some(Ok(pmu.into()))
-                    } else {
-                        None
-                    }
+        let pmu = glob::glob("/sys/devices/*/type")?
+            .map(|entry| -> Result<Option<String>> {
+                let path = &entry?;
+                let val: u32 = std::fs::read_to_string(path)?.trim().parse()?;
+                if val == self.type_ {
+                    Ok(path.to_str().map(|x| x.split("/").nth(3).unwrap().into()))
+                } else {
+                    Ok(None)
                 }
-                Err(_) => None,
             })
-            .collect();
-        if !pmus.is_empty() {
-            pmus.pop().unwrap()
+            .filter_map(|x| match x {
+                Ok(Some(r)) => Some(r),
+                _ => None,
+            })
+            .next(); // There should be only one!
+        if let Some(p) = pmu {
+            Ok(p)
         } else {
             Err(Error::PerfNotCapable)
         }
@@ -176,6 +171,6 @@ mod tests {
         attr.config = perf_sw_ids::PERF_COUNT_SW_TASK_CLOCK as _;
         let perf_str = attr.to_perf_string();
         assert!(perf_str.is_ok());
-        println!("{:?}", perf_str);
+        assert_eq!(perf_str.unwrap(), "software/config=0x1/uIGH");
     }
 }

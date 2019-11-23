@@ -1,4 +1,5 @@
 use core::arch::x86_64::__cpuid;
+use log::debug;
 
 /// Get CPU model string for x86_64 processors.
 ///
@@ -10,25 +11,10 @@ pub fn get_cpu_string() -> String {
     let mut model = 0u32;
     let mut step = 0u32;
 
-    let res = unsafe {
-        let res = __cpuid(0);
-        std::ptr::copy_nonoverlapping(
-            &res.ebx as *const u32 as _,
-            &mut vendor[0] as *mut u8 as _,
-            4,
-        );
-        std::ptr::copy_nonoverlapping(
-            &res.edx as *const u32 as _,
-            &mut vendor[4] as *mut u8 as _,
-            4,
-        );
-        std::ptr::copy_nonoverlapping(
-            &res.ecx as *const u32 as _,
-            &mut vendor[8] as *mut u8 as _,
-            4,
-        );
-        res
-    };
+    let res = unsafe { __cpuid(0) };
+    vendor[0..4].copy_from_slice(&res.ebx.to_ne_bytes());
+    vendor[4..8].copy_from_slice(&res.edx.to_ne_bytes());
+    vendor[8..12].copy_from_slice(&res.ecx.to_ne_bytes());
 
     if res.eax >= 1 {
         let res = unsafe { __cpuid(1) };
@@ -43,13 +29,17 @@ pub fn get_cpu_string() -> String {
         }
     }
 
-    format!(
+    let cpu = format!(
         "{}-{:X}-{:X}-{:X}",
         std::str::from_utf8(&vendor).unwrap(),
         family,
         model,
         step
-    )
+    );
+
+    debug!("Detected x86_64 processor - {}", cpu);
+
+    cpu
 }
 
 #[cfg(test)]

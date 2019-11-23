@@ -2,6 +2,10 @@
 
 #![deny(missing_docs, missing_debug_implementations)]
 
+#[allow(dead_code)]
+#[macro_use]
+pub(crate) mod util;
+
 mod errors;
 pub use errors::{Error, Result};
 
@@ -25,6 +29,3 @@ pub mod arch;
 
 mod pci;
 pub use pci::PciHandle;
-
-#[allow(dead_code)]
-pub(crate) mod util;
