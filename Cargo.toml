@@ -20,7 +20,7 @@ derive_more = "0.99"
 
 [build-dependencies]
 cc = "1.0"
-bindgen = "0.51"
+bindgen = "0.52"
 
 [dev-dependencies]
 env_logger = "0.7"

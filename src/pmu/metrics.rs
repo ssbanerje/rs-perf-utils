@@ -44,6 +44,8 @@ pub enum MetricExpr {
     Min(Box<MetricExpr>),
     /// Comma seperated expression to be used with `Min`.
     Comma(Box<MetricExpr>, Box<MetricExpr>),
+    /// Empty.
+    None,
 }
 
 impl MetricExpr {
@@ -96,6 +98,12 @@ impl MetricExpr {
             MetricExpr::If(ref a, ref b, ref c) => body!(a, b, c),
             _ => vec![],
         }
+    }
+}
+
+impl Default for MetricExpr {
+    fn default() -> Self {
+        MetricExpr::None
     }
 }
 

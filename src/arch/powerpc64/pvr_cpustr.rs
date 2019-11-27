@@ -1,4 +1,4 @@
-//! Utilities to read the PVR register
+//! Utilities to read the PVR.
 
 use log::debug;
 

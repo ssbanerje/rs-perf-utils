@@ -33,18 +33,18 @@ pub enum Error {
     /// Errors originating from calls to `libc` or other system utilties.
     #[fail(display = "System Error - {}", _0)]
     System(#[cause] nix::Error),
+    /// Errors in parsing PMU event JSON files.
+    ///
+    /// This can be because of a malformed JSON file or because parsing of some JSON formats is
+    /// unimplemented.
+    #[fail(display = "Error while parsing PMU JSON files - {:?}", _0)]
+    ParseEvent(crate::pmu::RawEvent),
     /// Caused when a `None` value is read.
     #[fail(display = "Tried to read a None value")]
     NoneError,
     /// Errors caused by capability checks on the kernel.
     #[fail(display = "Not allowed by kernel")]
     PerfNotCapable,
-    /// Errors in parsing PMU event JSON files.
-    ///
-    /// This can be because of a malformed JSON file or because parsing of some JSON formats is
-    /// unimplemented.
-    #[fail(display = "Error while parsing PMU JSON files.")]
-    ParsePmu,
 }
 
 impl Error {

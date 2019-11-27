@@ -36,8 +36,7 @@ pub fn read_counter_rdpmc(buf: &ffi::perf_event_mmap_page) -> Result<(u64, u64, 
             let time_mult = volatile!(buf.time_mult) as u64;
             let quot = cycles >> time_shift;
             let rem = cycles & ((1u64 << time_shift) - 1);
-            let delta = time_offset + (quot * time_mult) + ((rem * time_mult) >> time_shift);
-            delta
+            time_offset + (quot * time_mult) + ((rem * time_mult) >> time_shift)
         } else {
             0
         };
@@ -68,7 +67,7 @@ pub fn read_counter_rdpmc(buf: &ffi::perf_event_mmap_page) -> Result<(u64, u64, 
             break;
         }
     }
-    Ok((res & !0, enabled.0, running.0))
+    Ok((res, enabled.0, running.0))
 }
 
 impl HardwareReadable for PerfEvent {

@@ -172,7 +172,7 @@ pub struct RingBufferIter<'m> {
     /// Pointer to the start of the data section of the `RingBuffer`.
     #[index]
     #[index_mut]
-    data: &'m mut [u8],
+    data: &'m [u8],
     /// Byte index of the last item read from userspace (wrapped).
     next_idx: u64,
     /// Byte index of the last item read from kernel (wrapped).

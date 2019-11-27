@@ -1,3 +1,5 @@
+//! Utilities to parse the CPU string from the `cpuid` instruction.
+
 use core::arch::x86_64::__cpuid;
 use log::debug;
 

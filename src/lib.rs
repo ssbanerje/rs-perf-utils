@@ -10,10 +10,9 @@ mod errors;
 pub use errors::{Error, Result};
 
 mod api;
-pub use api::{Counter, HardwareCounter, SampledCounter};
+pub use api::{Event, EventGroup, Counter, HardwareCounter, EventRegistry, SampledCounter};
 
 pub mod perf;
-pub use perf::ffi;
 
 pub mod pmu;
 

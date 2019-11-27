@@ -6,7 +6,7 @@ use std::os::unix::io::AsRawFd;
 #[derive(Debug)]
 /// Handle to read and write model specific registers.
 ///
-/// Requires the `msr` kernel module loaded.
+/// Requires the `msr` kernel module to be loaded.
 pub struct MsrHandle {
     /// File descriptor for MSR device file.
     file: std::fs::File,
@@ -38,8 +38,10 @@ impl MsrHandle {
     }
 }
 
-/// MSR addresses from "Intel 64 and IA-32 Architectures Software Developers Manual Volume 3B: System
-/// Programming Guide, Part 2", Appendix A "PERFORMANCE-MONITORING EVENTS"
+/// MSR addresses.
+///
+/// See "Intel 64 and IA-32 Architectures Software Developers Manual Volume 3B: System
+/// Programming Guide, Part 2", Appendix A "PERFORMANCE-MONITORING EVENTS" for details.
 #[repr(u64)]
 #[derive(Debug)]
 #[allow(non_camel_case_types, non_snake_case, missing_docs)]

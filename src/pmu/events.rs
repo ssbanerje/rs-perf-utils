@@ -1,10 +1,227 @@
 use crate::perf::ffi::{perf_event_attr, perf_type_id};
 use crate::perf::PerfVersion;
-use crate::{pmu::MetricExpr, Result};
+use crate::pmu::MetricExpr;
+use crate::{Error, Result};
+use derive_more::From;
 use log::{error, warn};
 
 /// Raw event format represented in the JSON event files.
 pub type RawEvent = std::collections::HashMap<String, String>;
+
+/// Events that can be programmed into performance counter
+#[derive(Debug, From, Eq, PartialEq)]
+pub enum Event {
+    /// Events that can be directly programmed into performance counters.
+    HPC(HPCEvent),
+    /// Derived events that are counted over groups of performance counter.
+    Metric(MetricEvent),
+}
+
+impl Event {
+    /// Create a new `Event` by parsing data in a `RawEvent`.
+    pub fn from_raw_event(revt: &RawEvent) -> Result<Self> {
+        if revt.contains_key("EventName") {
+            Ok(HPCEvent::from_raw_event(revt)?.into())
+        } else if revt.contains_key("MetricName") {
+            Ok(MetricEvent::from_raw_event(revt)?.into())
+        } else {
+            Err(Error::ParseEvent(revt.clone()))
+        }
+    }
+}
+
+/// An event that can be directly polled or sampled on a hardware performance counter.
+#[derive(Debug, Default, Clone)]
+pub struct HPCEvent {
+    /// Name of the event.
+    pub name: String,
+    /// Topic of the event.
+    ///
+    /// This is the name of the JSON file from which the event was parsed.
+    pub topic: String,
+    /// Brief summary of the event.
+    pub desc: String,
+    /// Long description of the event.
+    pub long_desc: String,
+    /// Event code corresponding to the event.
+    event_code: Option<u64>,
+    /// Unit mask of the event.
+    ///
+    /// x86_64 specific: Qualifies an event to detect a special microarchitectural condition.
+    umask: Option<u64>,
+    /// Counter mask of the event.
+    ///
+    /// x86_64 specific.
+    cmask: Option<u8>,
+    /// Edge detect bit.
+    ///
+    /// x86_64 specific.
+    edge: bool,
+    /// Invert counter mask flag.
+    ///
+    /// x86_64 specific.
+    inv: bool,
+    /// Additional MSRs required to program the event.
+    ///
+    /// x86_64 specific: The first field stores the MSR address and the second stores the value to
+    /// be written.
+    msr: Option<(u64, u64)>,
+    /// Name given to the PMU that measures this event.
+    ///
+    /// The first field corresponds to the Linux name, while the second field correpsonds to the
+    /// name used by the processor manufacturer.
+    pmu: Option<(String, String)>,
+}
+
+impl HPCEvent {
+    /// Get Linux PMU names from `Unit` names in the JSON.
+    fn _pmu_from_json(val: &str) -> Option<&'static str> {
+        match val {
+            "CBO" => Some("uncore_cbox"),
+            "NCU" => Some("uncore_cbox_0"),
+            "QPI LL" => Some("uncore_qpi"),
+            "SBO" => Some("uncore_sbox"),
+            "iMPH-U" => Some("uncore_arb"),
+            "CPU-M-CF" => Some("cpum_cf"),
+            "CPU-M-SF" => Some("cpum_sf"),
+            "UPI LL" => Some("uncore_upi"),
+            "hisi_sccl,ddrc" => Some("hisi_sccl,ddrc"),
+            "hisi_sccl,hha" => Some("hisi_sccl,hha"),
+            "hisi_sccl,l3c" => Some("hisi_sccl,l3c"),
+            "L3PMC" => Some("amd_l3"),
+            _ => None,
+        }
+    }
+
+    /// Create a new `HPCEvent` by parsing data in a `RawEvent`.
+    pub fn from_raw_event(revt: &RawEvent) -> Result<Self> {
+        let mut evt = HPCEvent::default();
+
+        evt.name = revt.get("EventName").unwrap().clone();
+        evt.topic = revt.get("Topic").expect("Topic").clone();
+        if let Some(d) = revt.get("BriefDescription") {
+            evt.desc = d.clone();
+        }
+        if let Some(d) = revt.get("PublicDescription") {
+            evt.long_desc = d.clone();
+        }
+        let mut evt_code = 0;
+        if let Some(c) = revt.get("EventCode") {
+            let splits: Vec<&str> = c.split(',').collect();
+            evt_code |= u64::from_str_radix(&splits[0][2..], 16)?;
+        }
+        if let Some(c) = revt.get("ExtSel") {
+            evt_code |= u64::from_str_radix(&c.as_str()[2..], 16)? << 21;
+        }
+        evt.event_code = Some(evt_code);
+        if let Some(u) = revt.get("UMask") {
+            evt.umask = Some(u64::from_str_radix(&u[2..], 16)?);
+        }
+        if let Some(c) = revt.get("CounterMask") {
+            evt.cmask = Some(c.parse()?);
+        }
+        if let Some(e) = revt.get("EdgeDetect") {
+            evt.edge = (e.parse::<i32>()?) != 0;
+        }
+        if let Some(i) = revt.get("Invert") {
+            evt.inv = (i.parse::<i32>()?) != 0;
+        }
+        let mut msr_idx = !0;
+        let mut msr_val = !0;
+        if let Some(m) = revt.get("MSRIndex") {
+            let split: Vec<&str> = m.split(',').collect();
+            msr_idx = if split[0].len() == 1 {
+                split[0].parse()?
+            } else {
+                u64::from_str_radix(&split[0][2..], 16)?
+            };
+        }
+        if let Some(val) = revt.get("MSRValue") {
+            msr_val = if val.len() == 1 {
+                val.parse()?
+            } else {
+                u64::from_str_radix(&val[2..], 16)?
+            };
+        }
+        if msr_idx != !0 {
+            evt.msr = Some((msr_idx, msr_val))
+        }
+        if let Some(u) = revt.get("Unit") {
+            if u == "NCU" {
+                evt.umask = Some(0);
+                evt.event_code = Some(0xFF);
+            }
+            let lin = if let Some(pmu) = PmuEvent::_pmu_from_json(u.as_str()) {
+                pmu.into()
+            } else {
+                format!("uncore_{}", u)
+            };
+            evt.pmu = Some((lin, u.clone()));
+        }
+
+        Ok(evt)
+    }
+}
+
+impl PartialEq for HPCEvent {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for HPCEvent {}
+
+/// Derived event which is counted from several `HPCEvents`.
+#[derive(Debug, Default, Clone)]
+pub struct MetricEvent {
+    /// Name of the event.
+    pub name: String,
+    /// Topic of the event.
+    ///
+    /// This is the name of the JSON file from which the event was parsed.
+    pub topic: String,
+    /// Brief summary of the event.
+    pub desc: String,
+    /// Long description of the event.
+    pub long_desc: String,
+    /// Expression used to calculate the metric.
+    expr: (MetricExpr, String),
+    /// Metadata for grouping metrics.
+    metric_group: Option<String>,
+}
+
+impl MetricEvent {
+    /// Create a new `MetricEvent` by parsing data in a `RawEvent`.
+    pub fn from_raw_event(revt: &RawEvent) -> Result<Self> {
+        let mut evt = MetricEvent::default();
+
+        evt.name = revt.get("MetricName").unwrap().clone();
+        evt.topic = revt.get("Topic").expect("Topic").clone();
+        if let Some(d) = revt.get("BriefDescription") {
+            evt.desc = d.clone();
+        }
+        if let Some(d) = revt.get("PublicDescription") {
+            evt.long_desc = d.clone();
+        }
+        let expr = revt.get("MetricExpr").unwrap().clone();
+        evt.expr = (MetricExpr::parse_str(expr.as_str())?, expr);
+        if let Some(mg) = revt.get("MetricGroup") {
+            evt.metric_group = Some(mg.clone());
+        }
+
+        Ok(evt)
+    }
+}
+
+impl PartialEq for MetricEvent {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for MetricEvent {}
 
 /// Abstraction for a performance counter event.
 #[derive(Debug, Default, Clone)]
@@ -137,7 +354,7 @@ impl PmuEvent {
             evt.parsed_metric_expr = Some(MetricExpr::parse_str(expr.as_str())?);
             evt.metric_expr = Some(expr);
         } else {
-            return Err(crate::Error::ParsePmu);
+            return Err(crate::Error::ParseEvent(raw_event.clone()));
         }
 
         evt.topic = raw_event.get("Topic").expect("Topic").clone();
@@ -369,14 +586,6 @@ impl PmuEvent {
         Ok(evts)
     }
 }
-
-impl PartialEq for PmuEvent {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-    }
-}
-
-impl Eq for PmuEvent {}
 
 #[cfg(test)]
 mod tests {

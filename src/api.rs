@@ -1,23 +1,6 @@
+//! Defines core API interfaces used by this crate to access performance counters.
+
 use crate::Result;
-
-/// Registry of available counters.
-pub trait Registry<V> {
-    type CT: Counter<V>;
-    type SCT: SampledCounter<V>;
-
-    /// Query registry by name to identify counters.
-    fn query(&self, name: &str) -> Result<Vec<Self::CT>>;
-
-    /// Query registry by name to identify sampled counters.
-    fn query_sampled(&self, name: &str) -> Result<Vec<Self::SCT>> {
-        let mut q = self.query(name)?;
-        let mut res = Vec::with_capacity(q.len());
-        for _ in 0..q.len() {
-            res.push(q.pop().unwrap().into_sampled()?);
-        }
-        Ok(res)
-    }
-}
 
 /// A generic synchronous access performance counter.
 pub trait Counter<V> {
@@ -68,4 +51,34 @@ where
 {
     /// Read the latest value of the counter.
     fn read_direct(&self) -> Result<V>;
+}
+
+/// An event that can be programmed into a performance counter.
+pub trait Event<V> {
+    /// Type of performance counter that can be created from this event.
+    type Ctr: Counter<V>;
+
+    /// Create a schedulable counter from this event.
+    fn get_counter(&self) -> Self::Ctr;
+}
+
+/// A group of events that must be measured together to c
+pub trait EventGroup<V> {
+    /// Types of individual events in this group.
+    type Evt: Event<V>;
+
+    /// Create a set of schedulable counters from this event.
+    fn get_counters(&self) -> Vec<<Self::Evt as Event<V>>::Ctr>;
+
+    /// Aggregate the set of values of the counters to calculate the aggregated value of this group.
+    fn aggregate(&self, vals: Vec<V>) -> Result<V>;
+}
+
+/// Registry of available counters.
+pub trait EventRegistry<V> {
+    /// Type of directly polled performance counters for the `Registry`.
+    type Evt: Event<V>;
+
+    /// Query registry by name to identify counters.
+    fn query(&self, predicate: impl FnMut(&Self::Evt) -> bool) -> Result<Vec<Self::Evt>>;
 }

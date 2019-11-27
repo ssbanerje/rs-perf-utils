@@ -4,11 +4,10 @@ use crate::perf::PerfVersion;
 use derive_more::{Index, IndexMut, IntoIterator};
 use log::error;
 use regex::Regex;
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 
 mod events;
-pub use events::{PmuEvent, RawEvent};
+pub use events::{Event, HPCEvent, MetricEvent, PmuEvent, RawEvent};
 
 mod metrics;
 pub use metrics::{MetricExpr, Rule};
@@ -94,7 +93,7 @@ impl Pmu {
             .iter()
             .flat_map(|f| {
                 let s = std::fs::read_to_string(f).unwrap_or_else(|_| String::default());
-                let mut j: Vec<HashMap<String, String>> = match serde_json::from_str(s.as_str()) {
+                let mut j: Vec<RawEvent> = match serde_json::from_str(&s) {
                     Ok(v) => v,
                     Err(e) => {
                         error!("Could not parse JSON file -- {:?}", e);
@@ -106,7 +105,7 @@ impl Pmu {
                     let fname = std::path::Path::new(&f)
                         .file_name()
                         .and_then(|x| x.to_str())
-                        .unwrap();
+                        .unwrap_or("");
                     x.entry(String::from("Topic"))
                         .or_insert_with(|| String::from(&fname[0..fname.len() - 5]));
                 });
