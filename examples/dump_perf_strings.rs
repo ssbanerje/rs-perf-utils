@@ -1,6 +1,6 @@
 use log::info;
 use perf_utils::perf::PerfVersion;
-use perf_utils::pmu::Pmu;
+use perf_utils::registry::Pmu;
 
 fn main() -> perf_utils::Result<()> {
     env_logger::init();

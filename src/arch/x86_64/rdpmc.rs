@@ -13,7 +13,7 @@ extern "C" {
 /// The function returns (value, time_enabled, time_running).
 pub fn read_counter_rdpmc(buf: &ffi::perf_event_mmap_page) -> Result<(u64, u64, u64)> {
     if unsafe { buf.__bindgen_anon_1.__bindgen_anon_1.cap_user_rdpmc() == 0 } {
-        return Err(Error::PerfNotCapable);
+        return Err(Error::KernelCapabilityError);
     }
     let mut res: u64;
     let mut enabled = std::num::Wrapping(0u64);
@@ -89,7 +89,7 @@ impl HardwareReadable for PerfEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pmu::Pmu;
+    use crate::registry::Pmu;
 
     #[test]
     fn test_rdpmc_read() -> crate::Result<()> {

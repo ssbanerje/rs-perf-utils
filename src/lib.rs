@@ -10,11 +10,14 @@ mod errors;
 pub use errors::{Error, Result};
 
 mod api;
-pub use api::{Event, EventGroup, Counter, HardwareCounter, EventRegistry, SampledCounter};
+pub use api::{
+    BaseEvent, Counter, Event, EventGroup, EventRegistry, HardwareCounter, SampledCounter,
+    ScaledValue,
+};
 
 pub mod perf;
 
-pub mod pmu;
+pub mod registry;
 
 /// Architecture specific implementation details of performance counters:
 #[cfg(target_arch = "x86_64")]

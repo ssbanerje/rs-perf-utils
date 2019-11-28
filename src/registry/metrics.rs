@@ -9,7 +9,7 @@ use pest_derive::*;
 
 /// Helper struct to parse metric event expressions.
 #[derive(Parser)]
-#[grammar = "pmu/metric_parser.pest"]
+#[grammar = "registry/metric_parser.pest"]
 struct MetricExprParser;
 
 lazy_static! {

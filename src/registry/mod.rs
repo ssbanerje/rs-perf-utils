@@ -7,7 +7,7 @@ use regex::Regex;
 use std::io::{BufRead, BufReader};
 
 mod events;
-pub use events::{Event, HPCEvent, MetricEvent, PmuEvent, RawEvent};
+pub use events::{HPCEvent, MetricEvent, PmuEvent, RawEvent};
 
 mod metrics;
 pub use metrics::{MetricExpr, Rule};

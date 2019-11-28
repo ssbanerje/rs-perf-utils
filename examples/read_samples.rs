@@ -1,6 +1,6 @@
 use log::info;
 use perf_utils::perf::{OsReadable, PerfEvent};
-use perf_utils::pmu::Pmu;
+use perf_utils::registry::Pmu;
 
 fn fibonacci(n: u32) -> u32 {
     match n {

@@ -53,32 +53,62 @@ where
     fn read_direct(&self) -> Result<V>;
 }
 
-/// An event that can be programmed into a performance counter.
-pub trait Event<V> {
-    /// Type of performance counter that can be created from this event.
-    type Ctr: Counter<V>;
+/// Defines a measured value that can be scaled to correct for measurement errors.
+pub trait ScaledValue<V> {
+    /// Get the raw measurement value.
+    fn raw_value(&self) -> V;
 
-    /// Create a schedulable counter from this event.
-    fn get_counter(&self) -> Self::Ctr;
+    /// Get the scaled measurement value.
+    fn scaled_value(&self) -> V;
 }
 
-/// A group of events that must be measured together to c
-pub trait EventGroup<V> {
-    /// Types of individual events in this group.
-    type Evt: Event<V>;
+/// Trait allowing access to the basic metadata of all events.
+pub trait BaseEvent {
+    /// Get the name of the event.
+    fn name(&self) -> &str;
 
+    /// Get the topic containing the event.
+    fn topic(&self) -> &str;
+
+    /// Get a description of the event.
+    fn desc(&self) -> &str;
+}
+
+/// An event that can be programmed into a performance counter.
+pub trait Event<V, C>
+where
+    Self: BaseEvent,
+    C: Counter<V>,
+{
+    /// Create a schedulable counter from this event.
+    fn get_counter(&self) -> Result<C>;
+}
+
+/// A group of events that must be measured together.
+pub trait EventGroup<V, C>
+where
+    Self: BaseEvent,
+    C: Counter<V>,
+{
     /// Create a set of schedulable counters from this event.
-    fn get_counters(&self) -> Vec<<Self::Evt as Event<V>>::Ctr>;
+    fn get_counters(&self) -> Vec<C>;
 
     /// Aggregate the set of values of the counters to calculate the aggregated value of this group.
     fn aggregate(&self, vals: Vec<V>) -> Result<V>;
 }
 
 /// Registry of available counters.
-pub trait EventRegistry<V> {
-    /// Type of directly polled performance counters for the `Registry`.
-    type Evt: Event<V>;
+pub trait EventRegistry<V, E, C>
+where
+    E: Event<V, C>,
+    C: Counter<V>,
+{
+    /// Query registry to identify counters.
+    fn query(&self, predicate: impl FnMut(&E) -> bool) -> Result<Vec<E>>;
 
-    /// Query registry by name to identify counters.
-    fn query(&self, predicate: impl FnMut(&Self::Evt) -> bool) -> Result<Vec<Self::Evt>>;
+    /// Query registry by name of event to identify counters.
+    fn query_name(&self, name: &str) -> Result<Option<E>> {
+        let mut qres = self.query(|e: &E| e.name() == name)?;
+        Ok(qres.pop())
+    }
 }

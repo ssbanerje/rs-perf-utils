@@ -1,6 +1,7 @@
 use crate::perf::ffi::{perf_event_attr, perf_type_id};
 use crate::perf::PerfVersion;
-use crate::pmu::MetricExpr;
+use crate::registry::MetricExpr;
+use crate::{BaseEvent, Counter, Event};
 use crate::{Error, Result};
 use derive_more::From;
 use log::{error, warn};
@@ -10,14 +11,14 @@ pub type RawEvent = std::collections::HashMap<String, String>;
 
 /// Events that can be programmed into performance counter
 #[derive(Debug, From, Eq, PartialEq)]
-pub enum Event {
+pub(crate) enum EventWrapper {
     /// Events that can be directly programmed into performance counters.
     HPC(HPCEvent),
     /// Derived events that are counted over groups of performance counter.
     Metric(MetricEvent),
 }
 
-impl Event {
+impl EventWrapper {
     /// Create a new `Event` by parsing data in a `RawEvent`.
     pub fn from_raw_event(revt: &RawEvent) -> Result<Self> {
         if revt.contains_key("EventName") {
@@ -163,6 +164,30 @@ impl HPCEvent {
     }
 }
 
+impl BaseEvent for HPCEvent {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn topic(&self) -> &str {
+        &self.topic
+    }
+
+    fn desc(&self) -> &str {
+        &self.desc
+    }
+}
+
+impl<V, C> Event<V, C> for HPCEvent
+where
+    C: Counter<V>,
+{
+    fn get_counter(&self) -> Result<C> {
+        // TODO
+        Err(Error::NotImplemented)
+    }
+}
+
 impl PartialEq for HPCEvent {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
@@ -213,6 +238,33 @@ impl MetricEvent {
         Ok(evt)
     }
 }
+
+//impl crate::EventGroup<u64> for MetricEvent {
+//    fn name(&self) -> &str {
+//        &self.name
+//    }
+//
+//    fn topic(&self) -> &str {
+//        &self.topic
+//    }
+//
+//    fn desc(&self) -> &str {
+//        &self.desc
+//    }
+//
+//    fn get_counters<C>(&self) -> Vec<C>
+//    where
+//        C: crate::Counter<u64>,
+//    {
+//        // TODO
+//        vec![]
+//    }
+//
+//    fn aggregate(&self, _vals: Vec<u64>) -> Result<u64> {
+//        // TODO
+//        Err(Error::NotImplemented)
+//    }
+//}
 
 impl PartialEq for MetricEvent {
     #[inline]
@@ -590,7 +642,7 @@ impl PmuEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pmu::Pmu;
+    use crate::registry::Pmu;
     use rayon::prelude::*;
     use std::process::{Command, Stdio};
 

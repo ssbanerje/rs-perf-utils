@@ -318,7 +318,7 @@ impl PerfEventBuilder {
             false
         };
         if (self.cpuid == -1 && self.inherit) || freq_check {
-            Err(Error::PerfNotCapable)
+            Err(Error::KernelCapabilityError)
         } else {
             Ok(())
         }

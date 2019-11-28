@@ -75,7 +75,7 @@ impl perf_event_attr {
         if let Some(p) = pmu {
             Ok(p)
         } else {
-            Err(Error::PerfNotCapable)
+            Err(Error::KernelCapabilityError)
         }
     }
 

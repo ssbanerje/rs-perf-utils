@@ -14,3 +14,13 @@ pub use mmap::{
     CommRecord, ContextSwitchRecord, LostRecord, Mmap2Record, ParsedRecord, ProcessRecord,
     RawRecord, RingBuffer, RingBufferIter, SampleRecord, ThrottleRecord,
 };
+
+/// Allow conversion of an event to a Linux perf event string.
+pub trait ToPerfString<V, C>
+where
+    Self: crate::Event<V, C>,
+    C: crate::Counter<V>,
+{
+    /// Perform conversion.
+    fn to_perf_string(&self) -> String;
+}

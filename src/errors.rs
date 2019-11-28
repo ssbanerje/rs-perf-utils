@@ -29,7 +29,7 @@ pub enum Error {
     ParseUtf8(#[cause] std::str::Utf8Error),
     /// Errors caused by malformed metric expression strings for PMU events.
     #[fail(display = "Parse Error - {}", _0)]
-    ParseMetricExpr(#[cause] pest::error::Error<crate::pmu::Rule>),
+    ParseMetricExpr(#[cause] pest::error::Error<crate::registry::Rule>),
     /// Errors originating from calls to `libc` or other system utilties.
     #[fail(display = "System Error - {}", _0)]
     System(#[cause] nix::Error),
@@ -38,13 +38,16 @@ pub enum Error {
     /// This can be because of a malformed JSON file or because parsing of some JSON formats is
     /// unimplemented.
     #[fail(display = "Error while parsing PMU JSON files - {:?}", _0)]
-    ParseEvent(crate::pmu::RawEvent),
+    ParseEvent(crate::registry::RawEvent),
     /// Caused when a `None` value is read.
     #[fail(display = "Tried to read a None value")]
     NoneError,
     /// Errors caused by capability checks on the kernel.
     #[fail(display = "Not allowed by kernel")]
-    PerfNotCapable,
+    KernelCapabilityError,
+    /// Errors caused executing features that are not not implemented yet.
+    #[fail(display = "Not implemented")]
+    NotImplemented,
 }
 
 impl Error {
