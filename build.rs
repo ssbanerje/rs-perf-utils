@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 fn generate_kernel_bindings() {
     let kernel_header_wrapper = "src/perf/kernel_headers.h";
     println!("cargo:rerun-if-changed={}", kernel_header_wrapper);
@@ -36,7 +37,9 @@ fn compile_asm_helpers() {
 
 fn main() {
     // Generate bindings for headers listed in kernel-wrapper.h.
-    generate_kernel_bindings();
+    if cfg!(target_os = "linux") {
+        generate_kernel_bindings();
+    }
 
     // Compile asm helpers file into the rust library.
     compile_asm_helpers();

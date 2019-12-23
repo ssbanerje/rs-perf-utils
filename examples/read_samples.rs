@@ -1,6 +1,7 @@
 use log::info;
-use perf_utils::perf::{OsReadable, PerfEvent};
+use perf_utils::perf::PerfEvent;
 use perf_utils::registry::Pmu;
+use perf_utils::{Counter, SampledCounter, ScaledValue};
 
 fn fibonacci(n: u32) -> u32 {
     match n {
@@ -56,9 +57,9 @@ fn main() -> perf_utils::Result<()> {
         // Read counters
         for evt in events.iter_mut() {
             let samples: Vec<String> = evt
-                .read_samples()?
+                .read_samples()
                 .iter()
-                .map(|x| format!("{:#X}", x.value))
+                .map(|x| format!("{:#X}", x.scaled_value()))
                 .collect();
             info!("Run {} -> {}", run, samples.join(", "))
         }

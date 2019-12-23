@@ -1,5 +1,6 @@
 //! Utilities specific to the x86_64 architecture.
 
+use crate::api::HardwareCounter;
 use crate::perf::*;
 use crate::{Error, Result};
 
@@ -70,8 +71,8 @@ pub fn read_counter_rdpmc(buf: &ffi::perf_event_mmap_page) -> Result<(u64, u64, 
     Ok((res, enabled.0, running.0))
 }
 
-impl HardwareReadable for PerfEvent {
-    fn read_hw(&self) -> Result<PerfEventValue> {
+impl HardwareCounter<PerfEventValue> for PerfEvent {
+    fn read_direct(&self) -> Result<PerfEventValue> {
         if let Some(ref rb) = self.ring_buffer {
             let val = read_counter_rdpmc(unsafe { &*rb.header })?;
             Ok(crate::perf::PerfEventValue {
@@ -89,6 +90,7 @@ impl HardwareReadable for PerfEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::Counter;
     use crate::registry::Pmu;
 
     #[test]
@@ -114,7 +116,7 @@ mod tests {
         for i in 1..10 {
             println!("{}", i);
         }
-        let count = evt.read_hw();
+        let count = evt.read_direct();
         assert!(count.is_ok());
         Ok(())
     }

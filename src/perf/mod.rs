@@ -6,7 +6,7 @@ mod version;
 pub use version::PerfVersion;
 
 mod event;
-pub use event::{HardwareReadable, OsReadable, PerfEvent, PerfEventBuilder, PerfEventValue};
+pub use event::{PerfEvent, PerfEventBuilder, PerfEventValue};
 
 mod mmap;
 pub(crate) use mmap::PAGE_SIZE;

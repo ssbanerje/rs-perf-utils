@@ -1,6 +1,7 @@
 //! Defines core API interfaces used by this crate to access performance counters.
 
 use crate::Result;
+use nix::libc;
 
 /// A generic synchronous access performance counter.
 pub trait Counter<V> {
@@ -16,14 +17,11 @@ pub trait Counter<V> {
     /// Reset the counter.
     fn reset(&self) -> Result<()>;
 
+    /// Check if the target process of the counter has exited.
+    fn is_closed(&self) -> Result<bool>;
+
     /// Read the latest value of the counter.
     fn read_sync(&self) -> Result<V>;
-
-    /// Convert this `Counter` into a `SampledCounter`.
-    fn into_sampled<R, It>(self) -> Result<R>
-    where
-        R: SampledCounter<V, Iter = It>,
-        It: Iterator<Item = V>;
 }
 
 /// A generic sampled performance counter.
@@ -31,17 +29,18 @@ pub trait SampledCounter<V>
 where
     Self: Counter<V>,
 {
-    /// Type of the sample iterator.
-    type Iter: Iterator<Item = V>;
-
-    /// Get an iterator over the unread samples in the performance counter.
-    fn iter(&self) -> Self::Iter;
+    /// Collect all available samples of the counter and call `advance()` to mark them as read.
+    fn read_samples(&mut self) -> Vec<V>;
 
     /// Checks if there are sampled items waiting to be read.
-    fn unread_events(&self) -> bool;
+    ///
+    /// The call will block for `timeout` milliseconds.
+    fn unread_events(&self, timeout: libc::c_int) -> Result<bool>;
 
     /// Mark `num_items` samples as read.
-    fn advance(&self, num_items: usize);
+    ///
+    /// Mark all samples as read if the `num_items` is `None`.
+    fn advance(&mut self, num_items: Option<usize>);
 }
 
 /// A generic sampled performance counter that can be directly read without OS assistance.

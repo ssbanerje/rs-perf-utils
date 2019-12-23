@@ -15,6 +15,7 @@ pub use api::{
     ScaledValue,
 };
 
+#[cfg(target_os = "linux")]
 pub mod perf;
 
 pub mod registry;

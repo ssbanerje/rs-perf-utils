@@ -1,8 +1,9 @@
 //! Utilities for creating/opening perf events.
 
+use crate::api::{Counter, SampledCounter};
 use crate::perf::ffi;
 use crate::perf::PAGE_SIZE;
-use crate::{Error, Result};
+use crate::{Error, Result, ScaledValue};
 use byteorder::NativeEndian;
 use byteorder::ReadBytesExt;
 use log::debug;
@@ -10,28 +11,89 @@ use nix::libc;
 use std::convert::TryInto;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 
+/// Individual values held by a `SampleEvent`.
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct PerfEventValue {
+    /// Counter measurement.
+    pub(crate) value: u64,
+    /// Total time spent enabled.
+    pub(crate) time_enabled: u64,
+    /// Total time spent running.
+    ///
+    /// In the case the of event multiplexing the `time_enabled` and `time running` values can be
+    /// used to scale an estimated value for the count.
+    pub(crate) time_running: u64,
+    /// Globally unique ID for the event.
+    pub(crate) id: u64,
+}
+
+impl PerfEventValue {
+    /// Parse a PerfEventValue from a memory buffer.
+    pub fn from_bytes(ptr: &mut [u8; 32]) -> Result<Self> {
+        Self::from_cursor(&mut std::io::Cursor::new(ptr))
+    }
+
+    /// Parse this structure from a serialized in-memory format provided by the kernel.
+    ///
+    /// The structure parsed here is based on the configuration of enclosing `PerfEvent`'s attribute
+    /// set in `PerfEventBuilder::open`.
+    pub fn from_cursor<T>(ptr: &mut std::io::Cursor<T>) -> Result<Self>
+    where
+        std::io::Cursor<T>: byteorder::ReadBytesExt,
+    {
+        Ok(PerfEventValue {
+            value: ptr.read_u64::<NativeEndian>()?,
+            time_enabled: ptr.read_u64::<NativeEndian>()?,
+            time_running: ptr.read_u64::<NativeEndian>()?,
+            id: ptr.read_u64::<NativeEndian>()?,
+        })
+    }
+}
+
+impl ScaledValue<u64> for PerfEventValue {
+    fn raw_value(&self) -> u64 {
+        self.value
+    }
+
+    fn scaled_value(&self) -> u64 {
+        let v = self.value as f64;
+        let r = self.time_running as f64;
+        let e = self.time_enabled as f64;
+        (v * r / e) as u64
+    }
+}
+
+impl PartialEq for PerfEventValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl Eq for PerfEventValue {}
+
 /// A schedulable and readable performance counter.
 ///
 /// Represents a readable perf event which can be used to collect data directly from the kernel,
 /// through the memory mapped ring buffer, or through direct read from hardware.
 #[derive(Debug)]
 pub struct PerfEvent {
+    /// Name of the event.
+    name: String,
     /// Attributes corresponding to this event.
     pub attr: ffi::perf_event_attr,
     /// File corresponding to the underlying perf event.
-    pub file: std::fs::File,
+    file: std::fs::File,
     /// Ring buffer corresponding to underlying perf event.
-    pub ring_buffer: Option<crate::perf::RingBuffer>,
+    pub(crate) ring_buffer: Option<crate::perf::RingBuffer>,
 }
 
-impl PerfEvent {
-    /// Construct a new perf event using the associated builder,
-    pub fn build() -> PerfEventBuilder {
-        PerfEventBuilder::default()
+impl Counter<PerfEventValue> for PerfEvent {
+    fn name(&self) -> &String {
+        &self.name
     }
 
-    /// Enable counting for event.
-    pub fn enable(&self) -> Result<()> {
+    fn enable(&self) -> Result<()> {
         unsafe {
             ffi::perf_event_ioc_enable(self.file.as_raw_fd())?;
         }
@@ -39,8 +101,7 @@ impl PerfEvent {
         Ok(())
     }
 
-    /// Disable counting for event.
-    pub fn disable(&self) -> Result<()> {
+    fn disable(&self) -> Result<()> {
         unsafe {
             ffi::perf_event_ioc_disable(self.file.as_raw_fd())?;
         }
@@ -48,8 +109,7 @@ impl PerfEvent {
         Ok(())
     }
 
-    /// Reset counting for event.
-    pub fn reset(&self) -> Result<()> {
+    fn reset(&self) -> Result<()> {
         unsafe {
             ffi::perf_event_ioc_reset(self.file.as_raw_fd())?;
         }
@@ -57,23 +117,59 @@ impl PerfEvent {
         Ok(())
     }
 
-    /// Poll event for new samples.
-    pub fn poll(&self, timeout: libc::c_int) -> Result<nix::poll::PollFlags> {
-        let mut pollfd = [nix::poll::PollFd::new(
-            self.file.as_raw_fd(),
-            nix::poll::PollFlags::POLLIN | nix::poll::PollFlags::POLLHUP,
-        )];
-        nix::poll::poll(&mut pollfd, timeout)?;
-        match pollfd[0].revents() {
-            Some(x) => Ok(x),
-            _ => unreachable!(),
+    fn is_closed(&self) -> Result<bool> {
+        let poll = self.poll(0)?;
+        Ok(poll.intersects(nix::poll::PollFlags::POLLHUP))
+    }
+
+    fn read_sync(&self) -> Result<PerfEventValue> {
+        let mut bytes = [0u8; 32];
+        nix::unistd::read(self.file.as_raw_fd(), &mut bytes)?;
+        PerfEventValue::from_bytes(&mut bytes)
+    }
+}
+
+impl SampledCounter<PerfEventValue> for PerfEvent {
+    fn read_samples(&mut self) -> Vec<PerfEventValue> {
+        if let Some(ref mut rb) = self.ring_buffer {
+            let mut num_evts = 0usize;
+            let evts: Vec<PerfEventValue> = rb
+                .events()
+                .filter_map(|e| {
+                    num_evts += 1;
+                    if e.is_sample() {
+                        match e.parse().unwrap() {
+                            crate::perf::ParsedRecord::Sample(s) => Some(s.value),
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            self.advance(Some(num_evts));
+            evts
+        } else {
+            vec![]
         }
     }
 
-    /// Check if target process of this event has exited.
-    pub fn is_closed(&self) -> Result<bool> {
-        let poll = self.poll(0)?;
-        Ok(poll.intersects(nix::poll::PollFlags::POLLHUP))
+    fn unread_events(&self, timeout: libc::c_int) -> Result<bool> {
+        let p = self.poll(timeout)?;
+        Ok(p.intersects(nix::poll::PollFlags::POLLIN))
+    }
+
+    fn advance(&mut self, num_items: Option<usize>) {
+        if let Some(ref mut rb) = self.ring_buffer {
+            rb.advance(num_items);
+        }
+    }
+}
+
+impl PerfEvent {
+    /// Construct a new perf event using the associated builder,
+    pub fn build() -> PerfEventBuilder {
+        PerfEventBuilder::default()
     }
 
     /// Write modifications to `self.attr` to the kernel.
@@ -92,128 +188,33 @@ impl PerfEvent {
     ///
     /// By default the event is period based. To switch to frequency modify the event's `attr` field
     /// and write the modifications to the kernel using `modify_event_attributes`.
-    pub fn modify_frequency_period(&mut self, freq: u64) -> Result<()> {
+    pub fn modify_frequency_period(&mut self, period: u64) -> Result<()> {
         unsafe {
-            ffi::perf_event_ioc_period(self.file.as_raw_fd(), freq)?;
+            ffi::perf_event_ioc_period(self.file.as_raw_fd(), period)?;
         }
         debug!("PerfEvent modified: {:?}", self.attr);
         Ok(())
     }
-}
 
-/// Individual values held by a `SampleEvent`.
-#[derive(Debug, Clone)]
-pub struct PerfEventValue {
-    /// Counter measurement.
-    pub value: u64,
-    /// Total time spent enabled.
-    pub time_enabled: u64,
-    /// Total time spent running.
-    ///
-    /// In the case the of event multiplexing the `time_enabled` and `time running` values can be
-    /// used to scale an estimated value for the count.
-    pub time_running: u64,
-    /// Globally unique ID for the event.
-    pub id: u64,
-}
-
-impl PerfEventValue {
-    /// Parse this structure from a serialized in-memory format provided by the kernel.
-    ///
-    /// The structure parsed here is based on the configuration of enclosing `PerfEvent`'s attribute
-    /// set in `PerfEventBuilder::open`.
-    pub fn from_cursor<T>(ptr: &mut std::io::Cursor<T>) -> Result<Self>
-    where
-        std::io::Cursor<T>: byteorder::ReadBytesExt,
-    {
-        Ok(PerfEventValue {
-            value: ptr.read_u64::<NativeEndian>()?,
-            time_enabled: ptr.read_u64::<NativeEndian>()?,
-            time_running: ptr.read_u64::<NativeEndian>()?,
-            id: ptr.read_u64::<NativeEndian>()?,
-        })
-    }
-
-    /// Calculate the scaled value from the raw value using the amount of time enabled and running.
-    ///
-    /// More details at https://perf.wiki.kernel.org/index.php/Tutorial#multiplexing_and_scaling_events.
-    pub fn get_scaled_value(&self) -> u64 {
-        let v = self.value as f64;
-        let r = self.time_running as f64;
-        let e = self.time_enabled as f64;
-        (v * r / e) as u64
-    }
-}
-
-impl PartialEq for PerfEventValue {
-    fn eq(&self, other: &Self) -> bool {
-        self.value == other.value
-    }
-}
-
-impl Eq for PerfEventValue {}
-
-/// Methods for reading performance counter data through the kernel.
-///
-/// All `PerfEvents` will implement this trait.
-pub trait OsReadable {
-    /// Read value of performance counter from its file descriptor.
-    ///
-    /// This function will produce an error if this is event is set up to be sampled.
-    fn read_fd(&self) -> Result<u64>;
-
-    /// Read value of performance counter from its ring buffer and notify the kernel about the
-    /// number of events read.
-    ///
-    /// This function will produce an error if this is event is not set up to be sampled.
-    fn read_samples(&mut self) -> Result<Vec<PerfEventValue>>;
-}
-
-impl OsReadable for PerfEvent {
-    fn read_fd(&self) -> Result<u64> {
-        let mut bytes = [0u8; 8];
-        nix::unistd::read(self.file.as_raw_fd(), &mut bytes)?;
-        Ok(u64::from_ne_bytes(bytes))
-    }
-
-    fn read_samples(&mut self) -> Result<Vec<PerfEventValue>> {
-        if let Some(ref mut rb) = self.ring_buffer {
-            let mut num_evts = 0usize;
-            let evts: Vec<PerfEventValue> = rb
-                .events()
-                .filter_map(|e| {
-                    num_evts += 1;
-                    if e.is_sample() {
-                        match e.parse().unwrap() {
-                            crate::perf::ParsedRecord::Sample(s) => Some(s.value),
-                            _ => unreachable!(),
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            rb.advance(Some(num_evts));
-            Ok(evts)
-        } else {
-            Err(Error::NoneError)
+    /// Poll for new events.
+    fn poll(&self, timeout: libc::c_int) -> Result<nix::poll::PollFlags> {
+        let mut pollfd = [nix::poll::PollFd::new(
+            self.file.as_raw_fd(),
+            nix::poll::PollFlags::POLLIN | nix::poll::PollFlags::POLLHUP,
+        )];
+        nix::poll::poll(&mut pollfd, timeout)?;
+        match pollfd[0].revents() {
+            Some(x) => Ok(x),
+            _ => unreachable!(),
         }
     }
-}
-
-/// Methods for reading performance counter data directly from hardware.
-///
-/// Some architectures may not implement this trait.
-pub trait HardwareReadable {
-    /// Read counter.
-    ///
-    /// The function returns a `PerfEventValue`. However it will not set the `id` field.
-    fn read_hw(&self) -> Result<PerfEventValue>;
 }
 
 /// Helper struct to build a `PerfEvent` object.
 #[derive(Debug)]
 pub struct PerfEventBuilder {
+    /// Name of the event.
+    name: String,
     /// Target process ID.
     ///
     /// Defaults to current process.
@@ -263,6 +264,7 @@ pub struct PerfEventBuilder {
 impl Default for PerfEventBuilder {
     fn default() -> Self {
         PerfEventBuilder {
+            name: String::new(),
             pid: 0,
             cpuid: -1,
             leader: -1,
@@ -371,7 +373,7 @@ impl PerfEventBuilder {
     }
 
     /// Internal implementation of open so as to not consume self.
-    fn _open(&self, base_event_attr: Option<ffi::perf_event_attr>) -> Result<PerfEvent> {
+    fn _open(&mut self, base_event_attr: Option<ffi::perf_event_attr>) -> Result<PerfEvent> {
         // Check validity
         self._check_capabilities()?;
 
@@ -408,6 +410,7 @@ impl PerfEventBuilder {
 
         // Ok... We are done
         Ok(PerfEvent {
+            name: self.name.clone(),
             attr,
             file: unsafe { std::fs::File::from_raw_fd(fd) },
             ring_buffer,
@@ -417,7 +420,7 @@ impl PerfEventBuilder {
     /// Generate the `PerfEvent` from this builder.
     ///
     /// If a `base_event_attr` is provided, all fields set in the builder will be overwritten.
-    pub fn open(&self, base_event_attr: Option<ffi::perf_event_attr>) -> Result<PerfEvent> {
+    pub fn open(mut self, base_event_attr: Option<ffi::perf_event_attr>) -> Result<PerfEvent> {
         self._open(base_event_attr)
     }
 
@@ -439,6 +442,11 @@ impl PerfEventBuilder {
         }
         Ok(out)
     }
+
+    builder_pattern!(
+        /// Set the name of the event.
+        name: String
+    );
 
     builder_pattern!(
         /// Set process to be monitored.
@@ -537,14 +545,15 @@ mod tests {
         assert!(evt.disable().is_ok());
 
         // Check error on wrong read method
-        let err = evt.read_samples();
-        assert!(err.is_err());
+        let evts = evt.read_samples();
+        assert!(evts.is_empty());
 
         // Check value of count
-        let count = evt.read_fd();
+        let count = evt.read_sync();
         assert!(count.is_ok());
         let count = count.unwrap();
-        assert!(count > 0);
+        assert!(count.raw_value() > 0);
+        assert!(count.scaled_value() > 0);
     }
 
     #[test]
@@ -561,10 +570,6 @@ mod tests {
         assert!(evt.is_ok());
         let mut evt = evt.unwrap();
 
-        // Check error on wrong read method
-        let err = evt.read_fd();
-        assert!(err.is_err());
-
         for _ in 0..2 {
             // This checks the call to advance in the read_samples method.
             // Do some work
@@ -579,9 +584,7 @@ mod tests {
                 assert!(rb.events_pending());
             }
             let counts = evt.read_samples();
-            assert!(counts.is_ok());
-            let counts = counts.unwrap();
-            assert!(counts.len() > 0);
+            assert!(!counts.is_empty());
             for c in counts {
                 assert!(c.value > 0);
             }
