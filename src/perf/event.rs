@@ -64,13 +64,12 @@ impl ScaledValue<u64> for PerfEventValue {
     }
 }
 
+/// The equality check only compares raw values and not the scaled values.
 impl PartialEq for PerfEventValue {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value
     }
 }
-
-impl Eq for PerfEventValue {}
 
 /// A schedulable and readable performance counter.
 ///
